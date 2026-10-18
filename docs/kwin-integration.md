@@ -76,6 +76,9 @@ and checksum are checked on reuse. A KWin or LG Buddy update causes setup to
 reconsider the candidates; mismatched development files cannot build a plugin
 for an older still-running compositor. No incidental KWin upgrade is requested.
 Removal receipts and setup details live under `$XDG_STATE_HOME/lg-buddy/kwin`.
+Explicit setup and removal normalize legacy user-owned lock files to mode `0600`
+after acquiring their kernel lock, preserving the inode and exclusion with older
+helpers. Inspection and passive loading leave lock permissions unchanged.
 Rejected and superseded installed files are removed; denied removal retains a
 receipt for retry. Uninstall removes this user's enabled plugins and local cache,
 while respecting package ownership.
