@@ -401,6 +401,98 @@ fn passive_login_only_loads_an_existing_verified_plugin() {
 }
 
 #[test]
+fn explicit_setup_migrates_legacy_lock_permissions_without_replacing_the_inode() {
+    let fixture = Fixture::new();
+    let mut engine = fixture.engine();
+    fs::create_dir(&engine.state).unwrap();
+    fs::set_permissions(&engine.state, fs::Permissions::from_mode(0o700)).unwrap();
+    let path = engine.state.join("setup.lock");
+    fs::write(&path, "").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+    let inode = fs::metadata(&path).unwrap().ino();
+    fixture.artifact("payload/prebuilt/new", "compatible");
+
+    assert_eq!(engine.execute("--status"), Err(3));
+    engine.execute("").unwrap();
+    assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o644);
+    // Other onboarding locks retain their strict permission contract.
+    assert!(crate::setup::lock::FlowLock::try_acquire(&path).is_err());
+
+    engine.execute("--foreground").unwrap();
+    assert!(engine.host.ready);
+    assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
+    assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
+    engine.execute("--foreground").unwrap();
+    assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
+}
+
+#[test]
+fn legacy_lock_migration_waits_for_the_existing_kernel_lock() {
+    use std::os::fd::AsRawFd;
+    let fixture = Fixture::new();
+    let directory = fixture.0.join("state");
+    fs::create_dir(&directory).unwrap();
+    let path = directory.join("setup.lock");
+    let file = File::create(&path).unwrap();
+    file.set_permissions(fs::Permissions::from_mode(0o644))
+        .unwrap();
+    let inode = file.metadata().unwrap().ino();
+    assert_eq!(unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) }, 0);
+    assert_eq!(
+        setup_lock(&directory).err().unwrap().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    assert_eq!(file.metadata().unwrap().mode() & 0o777, 0o644);
+    drop(file);
+
+    let _lock = setup_lock(&directory).unwrap();
+    assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
+    assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
+    assert_eq!(
+        setup_lock(&directory).err().unwrap().kind(),
+        io::ErrorKind::WouldBlock
+    );
+}
+
+#[test]
+fn legacy_lock_migration_rejects_symlinks_and_hard_links_without_changing_the_target() {
+    let fixture = Fixture::new();
+    let directory = fixture.0.join("state");
+    fs::create_dir(&directory).unwrap();
+    let target = fixture.0.join("target");
+    fs::write(&target, "preserved").unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+    let path = directory.join("setup.lock");
+    std::os::unix::fs::symlink(&target, &path).unwrap();
+    assert!(setup_lock(&directory).is_err());
+    fs::remove_file(&path).unwrap();
+    fs::hard_link(&target, &path).unwrap();
+    assert!(setup_lock(&directory).is_err());
+    assert_eq!(fs::metadata(&target).unwrap().mode() & 0o777, 0o644);
+    assert_eq!(fs::read_to_string(&target).unwrap(), "preserved");
+}
+
+#[test]
+fn legacy_lock_migration_preserves_foreign_owned_files() {
+    use std::os::unix::ffi::OsStrExt;
+    if unsafe { libc::geteuid() } != 0 {
+        return;
+    }
+    let fixture = Fixture::new();
+    let directory = fixture.0.join("state");
+    fs::create_dir(&directory).unwrap();
+    let path = directory.join("setup.lock");
+    fs::write(&path, "").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+    let name = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::chown(name.as_ptr(), 1, 1) }, 0);
+    assert!(setup_lock(&directory).is_err());
+    let metadata = fs::metadata(&path).unwrap();
+    assert_eq!(metadata.uid(), 1);
+    assert_eq!(metadata.mode() & 0o777, 0o644);
+}
+
+#[test]
 fn kernel_lock_excludes_competing_setup_and_releases_duplicated_descriptors() {
     let fixture = Fixture::new();
     let lock = setup_lock(&fixture.0.join("state")).unwrap();

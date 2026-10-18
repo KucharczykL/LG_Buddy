@@ -8,7 +8,7 @@ use std::{
     io,
     os::{
         fd::AsRawFd,
-        unix::fs::{MetadataExt, OpenOptionsExt},
+        unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
         unix::process::CommandExt,
     },
     path::Path,
@@ -44,6 +44,17 @@ impl FlowLock {
     }
 
     pub(crate) fn try_acquire(path: &Path) -> io::Result<Self> {
+        Self::open_and_lock(path, false)
+    }
+
+    /// The old KWin shell helper created this lock with the user's umask.
+    /// Its caller has already made the owned state directory private. Tighten
+    /// the same inode only after excluding any older helper still using it.
+    pub(super) fn try_acquire_legacy_kwin(path: &Path) -> io::Result<Self> {
+        Self::open_and_lock(path, true)
+    }
+
+    fn open_and_lock(path: &Path, legacy_kwin: bool) -> io::Result<Self> {
         let open = || -> io::Result<File> {
             let parent = path
                 .parent()
@@ -68,12 +79,16 @@ impl FlowLock {
             let metadata = file.metadata()?;
             if !metadata.is_file()
                 || metadata.uid() != unsafe { libc::geteuid() }
-                || metadata.mode() & 0o077 != 0
+                || (!legacy_kwin && metadata.mode() & 0o077 != 0)
+                || (legacy_kwin && metadata.nlink() != 1)
             {
                 return Err(io::Error::other("unsafe onboarding lock file"));
             }
             if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
                 return Err(io::Error::last_os_error());
+            }
+            if legacy_kwin {
+                file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
             }
             Ok(file)
         };

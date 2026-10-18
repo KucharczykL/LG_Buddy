@@ -111,7 +111,7 @@ fn setup_lock(directory: &Path) -> io::Result<crate::setup::lock::FlowLock> {
         return Err(io::Error::other("unsafe KWin setup directory"));
     }
     fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
-    crate::setup::lock::FlowLock::try_acquire(&directory.join("setup.lock"))
+    crate::setup::lock::FlowLock::try_acquire_legacy_kwin(&directory.join("setup.lock"))
 }
 
 #[derive(Clone)]

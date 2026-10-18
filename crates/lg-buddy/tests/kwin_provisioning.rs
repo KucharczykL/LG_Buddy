@@ -2,7 +2,10 @@
 //! the privileged executables mocked. No compositor or system files are changed.
 use std::{
     fs,
-    os::unix::{fs::PermissionsExt, process::CommandExt},
+    os::unix::{
+        fs::{MetadataExt, PermissionsExt},
+        process::CommandExt,
+    },
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::atomic::{AtomicU64, Ordering},
@@ -173,12 +176,18 @@ fn fast_read_only_workers_return_their_status_without_losing_coprocess_descripto
 #[test]
 fn native_removal_brokers_permission_through_the_original_subject_without_flock() {
     let fixture = Fixture::new();
+    let lock = fixture.0.join("state/lg-buddy/kwin/setup.lock");
+    fs::write(&lock, "").unwrap();
+    fs::set_permissions(&lock, fs::Permissions::from_mode(0o644)).unwrap();
+    let inode = fs::metadata(&lock).unwrap().ino();
     let output = fixture.owner().output().unwrap();
     assert!(
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    assert_eq!(fs::metadata(&lock).unwrap().mode() & 0o777, 0o600);
+    assert_eq!(fs::metadata(&lock).unwrap().ino(), inode);
     assert_eq!(
         fs::read_dir(fixture.0.join("state/lg-buddy/kwin/plugins"))
             .unwrap()
