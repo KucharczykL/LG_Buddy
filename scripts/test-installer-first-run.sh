@@ -66,6 +66,10 @@ saved_value() {
 }
 
 case "${1:-}" in
+    installer-preflight)
+        # Ownership/mount refusals are covered by tests/installer_guard.rs.
+        exit 0
+        ;;
     config-binding)
         exec "${LG_BUDDY_BINDING_TEST_RUNTIME:?}" "$@"
         ;;

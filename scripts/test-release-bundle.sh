@@ -144,7 +144,7 @@ assert_cli_surface() {
     fi
     printf '%s\n' "$install_argument_output" | grep -F -q 'unexpected arguments for `updates install`: 1.5.0'
 
-    for hidden in startup shutdown screen-off screen-on "updates background-check" upgrade-preflight; do
+    for hidden in startup shutdown screen-off screen-on "updates background-check" upgrade-preflight installer-preflight; do
         if printf '%s\n' "$help_output" | grep -F -q "$hidden"; then
             echo "Hidden entrypoint appeared in public help: $hidden"
             exit 1

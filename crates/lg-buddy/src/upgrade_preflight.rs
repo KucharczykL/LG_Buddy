@@ -38,6 +38,7 @@ impl InstallerPathPolicy {
 }
 
 
+pub mod installer;
 mod observation;
 mod package_ownership;
 mod path_safety;

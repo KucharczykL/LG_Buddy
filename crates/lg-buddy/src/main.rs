@@ -7,6 +7,18 @@ fn main() -> ExitCode {
     let program = env::args().next().unwrap_or_else(|| "lg-buddy".to_string());
 
     let arguments: Vec<String> = env::args().skip(1).collect();
+    if arguments
+        .first()
+        .is_some_and(|arg| arg == "installer-preflight")
+    {
+        return match lg_buddy::upgrade_preflight::installer::run(&arguments[1..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("LG Buddy: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     if arguments.first().is_some_and(|arg| arg == "kwin-setup") {
         return ExitCode::from(lg_buddy::setup::run_kwin_setup(&arguments[1..]));
     }
