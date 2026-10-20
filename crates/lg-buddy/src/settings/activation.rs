@@ -142,14 +142,14 @@ mod tests {
     fn installed_root(path: &Path) -> PathBuf {
         let root = path.with_extension("install-root");
         for directory in [
-            root.join("usr/lib/lg-buddy"),
+            root.join("etc/lg-buddy"),
             root.join("etc/systemd/system"),
             root.join("etc/NetworkManager/dispatcher.d/pre-down.d"),
         ] {
             fs::create_dir_all(directory).unwrap();
         }
         fs::write(
-            root.join("usr/lib/lg-buddy/config-path"),
+            root.join("etc/lg-buddy/config-path"),
             path.to_string_lossy().as_bytes(),
         )
         .unwrap();
@@ -238,9 +238,9 @@ mod tests {
     fn sleep_activation_requires_the_installed_unit_and_hook() {
         let path = crate::settings::tests::unique_test_path("activation-missing");
         let root = path.with_extension("install-root");
-        fs::create_dir_all(root.join("usr/lib/lg-buddy")).unwrap();
+        fs::create_dir_all(root.join("etc/lg-buddy")).unwrap();
         fs::write(
-            root.join("usr/lib/lg-buddy/config-path"),
+            root.join("etc/lg-buddy/config-path"),
             path.to_string_lossy().as_bytes(),
         )
         .unwrap();

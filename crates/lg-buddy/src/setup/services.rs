@@ -12,7 +12,7 @@ use crate::presentation::brightness::UserFacingError;
 use crate::settings::{ServiceController, SettingsError, UserServiceState};
 
 const SCREEN_SERVICE: &str = "LG_Buddy_screen.service";
-const INSTALL_CONFIG_POINTER: &str = "/usr/lib/lg-buddy/config-path";
+const INSTALL_CONFIG_POINTER: &str = "/etc/lg-buddy/config-path";
 const LIFECYCLE_UNIT: &str = "/etc/systemd/system/LG_Buddy_lifecycle.service";
 const NETWORK_MANAGER_HOOK: &str = "/etc/NetworkManager/dispatcher.d/pre-down.d/LG_Buddy_lifecycle";
 
@@ -60,20 +60,22 @@ impl ServiceStep {
                 services.user_service_is_active(SCREEN_SERVICE)
             }
             Self::Lifecycle => {
-                // Package installs bind the service through a dynamic drop-in;
-                // they do not create the old bundle pointer under /usr/lib.
+                // Both layouts use the machine binding; package services also
+                // need their loaded dynamic drop-in to match.
                 let vendor = prefixed_path(
                     install_root,
                     "/usr/lib/systemd/system/LG_Buddy_lifecycle.service",
                 )
                 .is_file();
-                let binding = if vendor {
-                    services
-                        .system_service_config_path("LG_Buddy_lifecycle.service")
-                        .and_then(|path| validate_matching_config(config_path, &path))
-                } else {
-                    validate_config_pointer(config_path, install_root)
-                };
+                let binding = validate_config_pointer(config_path, install_root).and_then(|()| {
+                    if vendor {
+                        services
+                            .system_service_config_path("LG_Buddy_lifecycle.service")
+                            .and_then(|path| validate_matching_config(config_path, &path))
+                    } else {
+                        Ok(())
+                    }
+                });
                 if let Err(error) =
                     binding.and_then(|()| validate_sleep_installation(install_root, vendor))
                 {
@@ -283,26 +285,17 @@ fn validate_config_pointer(
     install_root: Option<&Path>,
 ) -> Result<(), SettingsError> {
     let pointer_path = prefixed_path(install_root, INSTALL_CONFIG_POINTER);
-    let pointer_metadata =
-        fs::metadata(&pointer_path).map_err(|error| SettingsError::Activation {
-            message: format!("the installed configuration pointer could not be read: {error}"),
-        })?;
-    if !pointer_metadata.file_type().is_file() {
-        return Err(SettingsError::Activation {
-            message: "the installed configuration pointer is not a regular file.".to_string(),
-        });
-    }
-    let pointer_config =
-        fs::read_to_string(&pointer_path).map_err(|error| SettingsError::Activation {
-            message: format!("the installed configuration pointer could not be read: {error}"),
-        })?;
-    let pointer_config = pointer_config
-        .lines()
-        .next()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+    let owner = if install_root.is_some() {
+        unsafe { libc::geteuid() }
+    } else {
+        0
+    };
+    let pointer_config = crate::config::binding::read(&pointer_path, owner)
+        .map_err(|error| SettingsError::Activation {
+            message: format!("the machine configuration binding could not be read: {error}"),
+        })?
         .ok_or_else(|| SettingsError::Activation {
-            message: "the installed configuration pointer is empty.".to_string(),
+            message: "the machine configuration binding is missing".into(),
         })?;
     let pointer_config =
         fs::canonicalize(pointer_config).map_err(|error| SettingsError::Activation {

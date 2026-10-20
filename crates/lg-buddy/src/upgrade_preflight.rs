@@ -486,6 +486,41 @@ mod tests {
     }
 
     #[test]
+    fn legacy_binding_migrates_but_invalid_new_binding_never_falls_back() {
+        let fixture = InstalledFixture::new("binding-migration");
+        let pointer = fixture.facts.layout.config_pointer();
+        let legacy = fixture.facts.layout.legacy_config_pointer();
+        fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        fs::rename(&pointer, &legacy).unwrap();
+        fs::remove_dir(pointer.parent().unwrap()).unwrap();
+        let report = evaluate_initial_preflight(&OsFilesystemFacts, &fixture.facts);
+        assert!(report.compatible(), "{}", report.render());
+        fs::create_dir_all(pointer.parent().unwrap()).unwrap();
+        fs::write(&pointer, "relative/config.env\n").unwrap();
+        let report = evaluate_initial_preflight(&OsFilesystemFacts, &fixture.facts);
+        assert_failure(&report, "config-discovery", &pointer, "absolute");
+        assert!(legacy.is_file());
+    }
+
+    #[test]
+    fn binding_migration_checks_destination_symlinks_and_user_selection_conflicts() {
+        let fixture = InstalledFixture::new("binding-destination");
+        let record = fixture.facts.layout.user_config_home.join("lg-buddy/config-path");
+        fs::create_dir_all(record.parent().unwrap()).unwrap();
+        fs::write(&record, "/different/config.env\n").unwrap();
+        let report = evaluate_initial_preflight(&OsFilesystemFacts, &fixture.facts);
+        assert_failure(&report, "user-config-discovery", &record, "conflicts");
+        fs::remove_file(&record).unwrap();
+        let pointer = fixture.facts.layout.config_pointer();
+        fs::remove_file(&pointer).unwrap();
+        fs::remove_dir(pointer.parent().unwrap()).unwrap();
+        symlink(fixture.root.join("missing-binding-dir"), pointer.parent().unwrap()).unwrap();
+        let report = evaluate_initial_preflight(&OsFilesystemFacts, &fixture.facts);
+        assert!(!report.compatible());
+        assert!(report.failures().iter().any(|failure| failure.check == "config-binding-migration"));
+    }
+
+    #[test]
     fn setup_destinations_can_be_created_on_old_installations_or_replaced() {
         let fixture = InstalledFixture::new("setup-upgrade");
         let old = evaluate_initial_preflight(&OsFilesystemFacts, &fixture.facts);
@@ -515,6 +550,7 @@ mod tests {
         for parent in ["/usr/lib/lg-buddy", "/usr/share"] {
             let fixture = InstalledFixture::new("setup-parent");
             let path = fixture.facts.layout.system_path(parent);
+            fs::create_dir_all(&path).unwrap();
             for filesystem in [
                 OverriddenFilesystem {
                     path: path.clone(),

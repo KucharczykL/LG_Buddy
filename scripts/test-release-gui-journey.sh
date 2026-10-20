@@ -90,7 +90,7 @@ run_installed_gui_journey() {
     local old_path="$PATH"
     local old_skip="${LG_BUDDY_SKIP_SYSTEMD_ACTIONS:-0}"
     local CONFIG_FILE LG_BUDDY_CONFIG
-    CONFIG_FILE="$(cat "$LG_BUDDY_INSTALL_ROOT/usr/lib/lg-buddy/config-path")"
+    CONFIG_FILE="$(cat "$LG_BUDDY_INSTALL_ROOT/etc/lg-buddy/config-path")"
     LG_BUDDY_CONFIG="$CONFIG_FILE"
     export LG_BUDDY_CONFIG
     local token="$(dirname "$CONFIG_FILE")/tvs/primary/access-token.json"

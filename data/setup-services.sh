@@ -147,6 +147,32 @@ verify_package_destination() {
     fi
 }
 
+verify_binding_destination() {
+    local destination="$1" ancestor="${1%/*}" boundary="${setup_root:-/}" mode
+    verify_package_destination "$destination" || return 1
+    while [[ "$ancestor" = "$boundary" || "$ancestor" = "$boundary/"* || "$boundary" = / ]]; do
+        if [ -e "$ancestor" ]; then
+            mode="$(stat -c %a -- "$ancestor")" || return 1
+            if [ ! -d "$ancestor" ] || [ "$(stat -c %u -- "$ancestor")" != "$EUID" ] \
+                || (( (8#$mode & 8#022) != 0 )) || [ ! -w "$ancestor" ]; then
+                echo "Unsafe machine binding directory: $ancestor" >&2
+                return 1
+            fi
+        fi
+        [ "$ancestor" != / ] || break
+        ancestor="${ancestor%/*}"
+        [ -n "$ancestor" ] || ancestor=/
+    done
+    if [ -e "$destination" ]; then
+        mode="$(stat -c %a -- "$destination")" || return 1
+        if [ ! -f "$destination" ] || [ "$(stat -c %u -- "$destination")" != "$EUID" ] \
+            || (( (8#$mode & 8#022) != 0 )); then
+            echo "Unsafe machine binding file: $destination" >&2
+            return 1
+        fi
+    fi
+}
+
 repair_services() {
     local config="$1" escaped unit load_state ownership tmpfiles
     ownership="$(service_setup_ownership)" || return 1
@@ -166,6 +192,12 @@ repair_services() {
         unowned) ;;
         *) echo "Service setup ownership could not be verified." >&2; return 1 ;;
     esac
+    # Both installation modes maintain the same machine binding. Validate it
+    # before stopping services or changing any integration files.
+    local binding="$setup_root/etc/lg-buddy/config-path" verdict
+    verify_binding_destination "$binding" || return 1
+    verdict="$(service_setup_ownership "$binding")" || return 1
+    [ "$verdict" = unowned ] || { echo "Machine binding is package-owned: $binding" >&2; return 1; }
     # Loaded Environment properties do not describe an already-running process.
     # Stop before writing/reloading so interruption leaves an inactive service
     # that the next read-only setup check can identify and repair.
@@ -188,12 +220,13 @@ repair_services() {
     done
     if [ "$ownership" = unowned ]; then
         write_if_changed "$setup_root/etc/tmpfiles.d/lg_buddy.conf" 644 < "$payload/lg_buddy.conf" || return 1
-        write_if_changed "$setup_root/usr/lib/lg-buddy/config-path" 644 < <(printf '%s\n' "$config") || return 1
         write_if_changed "$setup_root/etc/NetworkManager/dispatcher.d/pre-down.d/LG_Buddy_lifecycle" 755 < <(lifecycle_hook) || return 1
         tmpfiles="$setup_root/etc/tmpfiles.d/lg_buddy.conf"
     else
         tmpfiles="$setup_root/usr/lib/tmpfiles.d/lg_buddy.conf"
     fi
+    verify_binding_destination "$binding" || return 1
+    write_if_changed "$binding" 644 < <(printf '%s\n' "$config") || return 1
     # Always reload after repair; this also recovers an interrupted prior write.
     systemctl daemon-reload || return 1
     systemd-tmpfiles --create "$tmpfiles" || return 1

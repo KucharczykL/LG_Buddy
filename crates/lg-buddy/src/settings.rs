@@ -789,7 +789,7 @@ screen_restore_policy=aggressive
     fn config_path_resolver_reuses_config_path_resolution() {
         let resolved = ConfigPathResolver::resolve(ConfigPathSources {
             explicit_config: Some(Path::new("/tmp/custom.env")),
-            install_pointer_config: Some(Path::new("/tmp/pointer.env")),
+            user_selected_config: Some(Path::new("/tmp/pointer.env")),
             sudo_user_home: Some(Path::new("/tmp/sudo-home")),
             xdg_config_home: Some(Path::new("/tmp/xdg")),
             home: Some(Path::new("/tmp/home")),

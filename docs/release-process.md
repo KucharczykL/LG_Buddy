@@ -175,6 +175,12 @@ User service checks follow an absolute `XDG_CONFIG_HOME`, falling back to
 `~/.config` otherwise, as the installer and setup flow do. Setup helper and
 polkit destinations may be absent on older installations; the preflight checks
 that they can be safely created or replaced and requires their candidate payloads.
+The machine binding is `/etc/lg-buddy/config-path`; only its absence permits
+migration input from `/usr/lib/lg-buddy/config-path`. Preflight checks the new
+binding destination and the user's discovery record before installation. Bundle
+upgrades atomically seed the new binding before replacing the runtime, retaining
+the legacy record for recovery. Ordinary GUI/CLI config discovery stays within
+the invoking user's configuration home, including custom paths remembered there.
 
 The installed GUI uses the same compatibility checks with its own installed
 executable path; a source checkout or externally managed GUI cannot substitute

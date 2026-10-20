@@ -90,7 +90,7 @@ done
 test -f "$fixture/lifecycle-active"
 cmp "$config" "$fixture/original.env"
 cmp "$payload/lg_buddy.conf" "$setup_root/etc/tmpfiles.d/lg_buddy.conf"
-test "$(cat "$setup_root/usr/lib/lg-buddy/config-path")" = "$config"
+test "$(cat "$setup_root/etc/lg-buddy/config-path")" = "$config"
 test "$(stat -c %a "$setup_root/etc/NetworkManager/dispatcher.d/pre-down.d/LG_Buddy_lifecycle")" = 755
 python3 - "$config" "$setup_root/etc/systemd/system/LG_Buddy.service.d/config.conf" <<'PY'
 import pathlib, sys
@@ -153,7 +153,7 @@ cmp "$fixture/lifecycle-loaded" "$fixture/lifecycle-running"
 # Failure to stop must leave both disk and loaded configuration untouched.
 touch "$fixture/fail-stop"
 if repair_services "$config"; then echo 'failed stop reported success' >&2; exit 1; fi
-test "$(cat "$setup_root/usr/lib/lg-buddy/config-path")" = "$next_config"
+test "$(cat "$setup_root/etc/lg-buddy/config-path")" = "$next_config"
 cmp "$setup_root/etc/systemd/system/LG_Buddy_lifecycle.service.d/config.conf" "$fixture/lifecycle-running"
 test -f "$fixture/lifecycle-active"
 rm "$fixture/fail-stop"
@@ -195,6 +195,7 @@ test -f "$setup_root/etc/systemd/system/LG_Buddy.service.d/config.conf"
 test ! -e "$setup_root/etc/systemd/system/LG_Buddy.service"
 test ! -e "$setup_root/etc/tmpfiles.d/lg_buddy.conf"
 test ! -e "$setup_root/usr/lib/lg-buddy/config-path"
+test "$(cat "$setup_root/etc/lg-buddy/config-path")" = "$config"
 grep -Fx -- "--create $setup_root/usr/lib/tmpfiles.d/lg_buddy.conf" "$fixture/tmpfiles-actions"
 # A package-owned drop-in is refused before stopping services or writing files.
 service_setup_ownership() { printf '%s\n' package; }
@@ -261,6 +262,29 @@ service_setup_ownership() { if [ "$#" -eq 0 ]; then printf '%s\n' package; else 
 printf 'local shadow\n' > "$setup_root/etc/systemd/system/LG_Buddy.service"
 if repair_services "$config"; then echo 'ignored shadowing base unit' >&2; exit 1; fi
 test ! -s "$fixture/actions"
+rm "$setup_root/etc/systemd/system/LG_Buddy.service"
+# The machine binding uses the same safe destination policy in both modes.
+for binding_mode in unowned package; do
+    service_setup_ownership() {
+        if [ "$#" -eq 0 ]; then printf '%s\n' "$binding_mode"; else printf '%s\n' unowned; fi
+    }
+    binding_directory="$setup_root/etc/lg-buddy"
+    mv "$binding_directory" "$fixture/binding-backup"
+    mkdir -p "$fixture/redirected-binding"
+    printf 'retained\n' > "$fixture/redirected-binding/config-path"
+    ln -s "$fixture/redirected-binding" "$binding_directory"
+    : > "$fixture/actions"
+    if repair_services "$config"; then echo 'followed machine binding directory link' >&2; exit 1; fi
+    test ! -s "$fixture/actions"
+    test "$(cat "$fixture/redirected-binding/config-path")" = retained
+    rm "$binding_directory"
+    mv "$fixture/binding-backup" "$binding_directory"
+    chmod 777 "$binding_directory"
+    if repair_services "$config"; then echo 'accepted a writable binding directory' >&2; exit 1; fi
+    test ! -s "$fixture/actions"
+    chmod 755 "$binding_directory"
+done
+
 # Exercise the installed runtime's real ownership entry point against pinned
 # package-tool paths, without querying or mutating this host's package database.
 if [ "$#" -eq 1 ]; then

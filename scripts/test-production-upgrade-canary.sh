@@ -215,6 +215,9 @@ grep -F -x -q 'Icon=io.github.staphylococcus.LGBuddy' "$INSTALLED_DESKTOP_ENTRY"
 [ ! -e "$LEGACY_DESKTOP_ENTRY" ] || fail "Published upgrade left the legacy desktop entry installed."
 cmp -s "$CONFIG_SNAPSHOT" "$CONFIG_FILE" || fail "Production upgrade changed the user configuration."
 cmp -s "$POINTER_SNAPSHOT" "$INSTALLED_POINTER" || fail "Production upgrade changed the config pointer."
+cmp -s "$POINTER_SNAPSHOT" "$INSTALL_ROOT/etc/lg-buddy/config-path" || fail "Upgrade did not preserve the selected config in the new machine binding."
+[ "$(stat -c %a "$INSTALL_ROOT/etc/lg-buddy/config-path")" = 644 ] || fail "Machine binding mode is not 644."
+
 cmp -s "$TOKEN_SNAPSHOT" "$NATIVE_TOKEN_FILE" || fail "Production upgrade changed the native credential."
 [ ! -e "$INSTALL_ROOT/usr/bin/LG_Buddy_PIP" ] || fail "Production native upgrade left the obsolete Python environment."
 "$INSTALLED_BINARY" settings get updates.channel | grep -q '^prerelease$'

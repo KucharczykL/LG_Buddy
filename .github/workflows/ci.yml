@@ -37,12 +37,9 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
-      - name: Run Rust test suite
-        run: cargo test --locked -p lg-buddy
-
       - name: Verify root-scoped ownership behavior
         run: |
-          # Ask Cargo for the exact executable from the preceding build;
+          # Ask Cargo for the exact test executable;
           # globbing target/debug/deps can select a stale test binary.
           test_binary="$(cargo test --locked -p lg-buddy --lib --no-run --message-format=json | python3 -c '
           import json, sys
@@ -87,6 +84,9 @@ jobs:
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
           bwrap --ro-bind / / --dev /dev true
+
+      - name: Run Rust test suite
+        run: cargo test --locked -p lg-buddy
 
       - name: Run display-backed GTK test suite
         run: |

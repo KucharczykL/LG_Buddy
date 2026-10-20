@@ -1148,7 +1148,12 @@ pub fn run_command<W: Write>(command: Command, writer: &mut W) -> Result<(), Run
     // TV operations require the current config, including before the user
     // daemon has had a chance to convert a stale saved profile.
     if requires_current_config(&command) {
-        let config_path = resolve_config_path_from_env().map_err(RunError::ConfigPath)?;
+        let config_path = if matches!(command, Command::NetworkManagerPreDown) {
+            config::resolve_machine_config_path_from_env()
+        } else {
+            resolve_config_path_from_env()
+        }
+        .map_err(RunError::ConfigPath)?;
         // Early-feedback stale gate: a stale 1.x/bscpylgtv config is a
         // read-only MigrationRequired failure before any runtime work. The
         // command handler re-reads via the loader to obtain the snapshot.

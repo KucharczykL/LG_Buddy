@@ -32,7 +32,8 @@ GUI_INSTALL_PATH="${SYSTEM_BIN_DIR}/lg-buddy-gui"
 VENV_DIR="${SYSTEM_BIN_DIR}/LG_Buddy_PIP"
 SYSTEM_LIB_DIR="$(prefix_path "/usr/lib/lg-buddy")"
 COMMON_HELPER_PATH="${SYSTEM_LIB_DIR}/common.sh"
-CONFIG_POINTER_PATH="${SYSTEM_LIB_DIR}/config-path"
+CONFIG_POINTER_PATH="$(prefix_path /etc/lg-buddy/config-path)"
+LEGACY_CONFIG_POINTER_PATH="${SYSTEM_LIB_DIR}/config-path"
 SYSTEM_SLEEP_HOOK_PATH="$(prefix_path "/usr/lib/systemd/system-sleep/LG_Buddy_sleep_hook")"
 SYSTEMD_SYSTEM_DIR="$(prefix_path "/etc/systemd/system")"
 SYSTEMD_SERVICE_PATH="${SYSTEMD_SYSTEM_DIR}/LG_Buddy.service"
@@ -69,12 +70,39 @@ elif [ -r "$COMMON_HELPER_PATH" ]; then
 fi
 
 if declare -F lg_buddy_effective_config_path >/dev/null 2>&1; then
-    CONFIG_FILE="$(lg_buddy_effective_config_path 2>/dev/null || true)"
+    CONFIG_FILE="$(lg_buddy_effective_config_path)" || exit 1
 fi
 
 CONFIG_FILE="${CONFIG_FILE:-${LG_BUDDY_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/lg-buddy/config.env}}"
 CONFIG_DIR="$(dirname "$CONFIG_FILE")"
 TV_PROFILES_DIR="${CONFIG_DIR}/tvs"
+
+# Refuse redirected or untrusted binding paths before privileged removals.
+# A fixture prefix is owned by the invoking user; real system paths by root.
+binding_owner=0
+[ -z "$INSTALL_ROOT" ] || binding_owner="$(id -u)"
+for binding in "$CONFIG_POINTER_PATH" "$LEGACY_CONFIG_POINTER_PATH"; do
+    ancestor="$binding"
+    while [ -n "$ancestor" ]; do
+        if [ -L "$ancestor" ]; then
+            echo "Refusing a symbolic link in config binding path: $ancestor" >&2
+            exit 1
+        fi
+        if [ -e "$ancestor" ]; then
+            mode="$(stat -c %a -- "$ancestor")" || exit 1
+            if { [ "$ancestor" = "$binding" ] && [ ! -f "$ancestor" ]; } \
+                || { [ "$ancestor" != "$binding" ] && [ ! -d "$ancestor" ]; } \
+                || [ "$(stat -c %u -- "$ancestor")" != "$binding_owner" ] \
+                || (( (8#$mode & 8#022) != 0 )); then
+                echo "Unsafe config binding path: $ancestor" >&2
+                exit 1
+            fi
+        fi
+        [ "$ancestor" != "${INSTALL_ROOT:-/}" ] || break
+        ancestor="${ancestor%/*}"
+        [ -n "$ancestor" ] || ancestor=/
+    done
+done
 
 echo "Disabling & removing services..."
 echo "(This might turn off your TV)"
@@ -143,7 +171,8 @@ run_privileged rm -f "$NM_LIFECYCLE_HOOK_PATH"
 run_privileged rm -f "$SYSTEM_SLEEP_HOOK_PATH"
 run_privileged rm -f "$TMPFILES_CONF_PATH"
 run_privileged rm -f "$COMMON_HELPER_PATH"
-run_privileged rm -f "$CONFIG_POINTER_PATH"
+run_privileged rm -f "$CONFIG_POINTER_PATH" "$LEGACY_CONFIG_POINTER_PATH"
+run_privileged rmdir "$(prefix_path /etc/lg-buddy)" 2>/dev/null || true
 run_privileged rmdir "$SYSTEM_LIB_DIR" 2>/dev/null || true
 run_privileged rm -rf "$RUN_STATE_DIR"
 
@@ -165,6 +194,12 @@ if [ -f "$CONFIG_FILE" ]; then
     case "$REMOVE_CONFIG" in
         [Yy]*|1|true|TRUE|True|yes|YES|Yes)
             rm -f "$CONFIG_FILE"
+            if declare -F lg_buddy_user_config_home >/dev/null 2>&1; then
+                user_selection="$(lg_buddy_user_config_home)/lg-buddy/config-path"
+                if [ -f "$user_selection" ] && [ "$(cat "$user_selection")" = "$CONFIG_FILE" ]; then
+                    rm -f "$user_selection"
+                fi
+            fi
             rm -rf "$TV_PROFILES_DIR"
             rmdir "$CONFIG_DIR" 2>/dev/null || true
             echo "Removed user configuration."
