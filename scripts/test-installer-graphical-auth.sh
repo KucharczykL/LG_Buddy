@@ -17,6 +17,8 @@ if ! command -v unshare >/dev/null 2>&1 || ! unshare -Ur true >/dev/null 2>&1; t
     exit 1
 fi
 
+export LG_BUDDY_BINDING_TEST_RUNTIME="${1:-$REPOSITORY_ROOT/target/debug/lg-buddy}"
+[ -x "$LG_BUDDY_BINDING_TEST_RUNTIME" ] || { echo "Build lg-buddy before running installer smoke." >&2; exit 1; }
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
@@ -31,6 +33,9 @@ cat >"$BUNDLE/lg-buddy" <<'EOF'
 #!/bin/sh
 set -eu
 case "${1:-}" in
+    config-binding)
+        exec "${LG_BUDDY_BINDING_TEST_RUNTIME:?}" "$@"
+        ;;
     --version)
         printf '%s\n' '1.7.0'
         ;;

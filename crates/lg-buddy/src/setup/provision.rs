@@ -31,6 +31,7 @@ const NM_HOOK: &str =
 pub(crate) struct ServiceInstallation<'a, C> {
     pub config: &'a Path,
     pub user_units: &'a Path,
+    pub user_selection: &'a Path,
     pub system_root: &'a Path,
     pub authorization: crate::setup::flow::AuthorizationMode,
     pub controller: &'a C,
@@ -213,6 +214,22 @@ impl<C: ServiceController> ServiceInstallation<'_, C> {
         if self.declarative_installation() || self.system_root.join("run/ostree-booted").exists() {
             return Ok(());
         }
+        crate::config::binding::validate_destination(
+            &self.system_root.join("etc/lg-buddy/config-path"),
+            if self.system_root == Path::new("/") {
+                0
+            } else {
+                unsafe { libc::geteuid() }
+            },
+            self.system_root,
+        )
+        .map_err(io_error)?;
+        crate::config::binding::validate_destination(
+            self.user_selection,
+            unsafe { libc::geteuid() },
+            self.user_selection.parent().unwrap(),
+        )
+        .map_err(io_error)?;
         if self.package_mode()? {
             for spec in self.vendor_files() {
                 if !matches_file(&spec)? {
@@ -349,6 +366,14 @@ impl<C: ServiceController> ServiceInstallation<'_, C> {
                 0o644,
             ),
         ];
+        files.push(file(
+            self.user_selection.to_path_buf(),
+            format!(
+                "{}\n",
+                fs::canonicalize(self.config).map_err(io_error)?.display()
+            ),
+            0o644,
+        ));
         if !self.package_mode()? {
             files.extend([
                 file(
@@ -386,6 +411,14 @@ impl<C: ServiceController> ServiceInstallation<'_, C> {
                 0o644,
             ),
         ];
+        files.push(file(
+            self.system_root.join("etc/lg-buddy/config-path"),
+            format!(
+                "{}\n",
+                fs::canonicalize(self.config).map_err(io_error)?.display()
+            ),
+            0o644,
+        ));
         if !self.package_mode()? {
             files.extend([
                 file(
@@ -409,14 +442,6 @@ impl<C: ServiceController> ServiceInstallation<'_, C> {
                         .join("etc/NetworkManager/dispatcher.d/pre-down.d/LG_Buddy_lifecycle"),
                     NM_HOOK,
                     0o755,
-                ),
-                file(
-                    self.system_root.join("usr/lib/lg-buddy/config-path"),
-                    format!(
-                        "{}\n",
-                        fs::canonicalize(self.config).map_err(io_error)?.display()
-                    ),
-                    0o644,
                 ),
             ]);
         }
@@ -604,7 +629,16 @@ impl<C: ServiceController> ServiceInstallation<'_, C> {
             if self.package_mode()? {
                 package_write_destination(&spec.path)?;
             }
-            write_file(&spec)?;
+            if spec.path == self.user_selection {
+                crate::config::binding::remember(
+                    &fs::canonicalize(self.config).map_err(io_error)?,
+                    self.user_selection,
+                    true,
+                )
+                .map_err(io_error)?;
+            } else {
+                write_file(&spec)?;
+            }
         }
         // Reload on every incomplete attempt: previous execution may have stopped after writing files.
         self.controller.reload_user_units()?;

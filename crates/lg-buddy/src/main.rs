@@ -36,6 +36,24 @@ fn main() -> ExitCode {
         };
     }
 
+    if arguments.first().is_some_and(|arg| arg == "config-binding") {
+        if arguments.get(1).is_some_and(|arg| arg == "migrate") {
+            // This installer entrypoint is single-threaded. Publish newly
+            // created root directories with traversable permissions immediately,
+            // including if installation stops before the binding is written.
+            unsafe {
+                libc::umask(0o022);
+            }
+        }
+        return match lg_buddy::config::binding::run_installer_command(&arguments[1..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("LG Buddy: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+
     match parse_args(arguments) {
         Ok(ParseOutcome::Help(topic)) => {
             print!("{}", help(&program, topic));

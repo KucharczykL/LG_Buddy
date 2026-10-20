@@ -19,11 +19,13 @@ const GNOME_SHELL_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackendSelectionError {
     InvalidOverride(String),
+    ConfigPath(String),
 }
 
 impl fmt::Display for BackendSelectionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ConfigPath(message) => write!(f, "{message}"),
             Self::InvalidOverride(value) => write!(
                 f,
                 "invalid LG_BUDDY_SCREEN_BACKEND value `{value}`; expected auto, gnome, or wayland"
@@ -152,6 +154,7 @@ pub fn configured_backend_from_env_or_config() -> Result<ScreenBackend, BackendS
     let config_backend = match resolve_config_path_from_env() {
         Ok(path) => load_config(&path).ok().map(|config| config.screen_backend),
         Err(ConfigPathError::NotConfigured) => None,
+        Err(error) => return Err(BackendSelectionError::ConfigPath(error.to_string())),
     };
 
     configured_backend_from_sources(override_value.as_deref(), config_backend)

@@ -5,6 +5,8 @@ umask 0022
 
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 REPOSITORY_ROOT="$(dirname "$SCRIPT_DIR")"
+export LG_BUDDY_BINDING_TEST_RUNTIME="${1:-$REPOSITORY_ROOT/target/debug/lg-buddy}"
+[ -x "$LG_BUDDY_BINDING_TEST_RUNTIME" ] || { echo "Build lg-buddy before running installer smoke." >&2; exit 1; }
 WORK_DIR="$(mktemp -d)"
 BUNDLE="$WORK_DIR/bundle"
 STUB_DIR="$WORK_DIR/stubs"
@@ -64,6 +66,9 @@ saved_value() {
 }
 
 case "${1:-}" in
+    config-binding)
+        exec "${LG_BUDDY_BINDING_TEST_RUNTIME:?}" "$@"
+        ;;
     --version)
         printf '%s\n' '1.7.0'
         ;;
@@ -95,7 +100,7 @@ case "${1:-}" in
         fi
         installed_dir="$(dirname "$0")"
         [ -x "$installed_dir/lg-buddy-gui" ]
-        [ -f "$installed_dir/../lib/lg-buddy/config-path" ]
+        [ -f "$installed_dir/../../etc/lg-buddy/config-path" ]
         [ ! -f "$installed_dir/../../etc/systemd/system/LG_Buddy.service" ]
         printf '%s\n' "$0:${LG_BUDDY_CONFIG:?}" >"${LG_BUDDY_HANDOFF_MARKER:?}"
         ;;
@@ -310,6 +315,57 @@ grep -F -q 'Preserving existing TV profile and policy settings.' "$RUN_OUTPUT"
 grep -F -q 'restart LG_Buddy_lifecycle.service' "$RUN_SYSTEMCTL_LOG"
 grep -F -q -- '--user enable LG_Buddy_screen.service' "$RUN_SYSTEMCTL_LOG"
 grep -F -q -- '--user restart LG_Buddy_screen.service' "$RUN_SYSTEMCTL_LOG"
+
+# A manual reinstall discovers a legacy custom binding before considering the
+# invoking user's default. Config and credentials stay at their existing paths.
+CUSTOM_HOME="$WORK_DIR/custom-reinstall/home"
+CUSTOM_CONFIG="$CUSTOM_HOME/saved TV/config.env"
+CUSTOM_ROOT="$WORK_DIR/custom-reinstall/root"
+mkdir -p "$(dirname "$CUSTOM_CONFIG")/tvs/primary" "$CUSTOM_HOME/.config/lg-buddy" "$CUSTOM_ROOT/usr/lib/lg-buddy"
+cp "$WORK_DIR/configured.expected" "$CUSTOM_CONFIG"
+printf '%s\n' retained-token >"$(dirname "$CUSTOM_CONFIG")/tvs/primary/access-token.json"
+printf '%s\n' unrelated-user-default >"$CUSTOM_HOME/.config/lg-buddy/config.env"
+printf '%s\n' "$CUSTOM_CONFIG" >"$CUSTOM_ROOT/usr/lib/lg-buddy/config-path"
+run_install custom-reinstall
+[ "$RUN_STATUS" -eq 0 ] || { cat "$RUN_OUTPUT"; exit 1; }
+cmp "$WORK_DIR/configured.expected" "$CUSTOM_CONFIG"
+[ "$(cat "$(dirname "$CUSTOM_CONFIG")/tvs/primary/access-token.json")" = retained-token ]
+[ "$(cat "$CUSTOM_ROOT/etc/lg-buddy/config-path")" = "$CUSTOM_CONFIG" ]
+[ "$(cat "$CUSTOM_ROOT/usr/lib/lg-buddy/config-path")" = "$CUSTOM_CONFIG" ]
+[ "$(cat "$CUSTOM_HOME/.config/lg-buddy/config-path")" = "$CUSTOM_CONFIG" ]
+[ "$(cat "$CUSTOM_HOME/.config/lg-buddy/config.env")" = unrelated-user-default ]
+! grep -F -q 'Opening LG Buddy to pair your first TV...' "$RUN_OUTPUT"
+
+# Uninstallation removes both machine records and keeps user discovery when
+# settings are retained. A redirected machine directory must refuse first.
+mv "$CUSTOM_ROOT/etc/lg-buddy" "$CUSTOM_ROOT/etc/binding-backup"
+ln -s "$CUSTOM_ROOT/etc/binding-backup" "$CUSTOM_ROOT/etc/lg-buddy"
+if HOME="$CUSTOM_HOME" XDG_CONFIG_HOME="$CUSTOM_HOME/.config" LG_BUDDY_INSTALL_ROOT="$CUSTOM_ROOT" \
+    LG_BUDDY_SUDO_CMD=none LG_BUDDY_NONINTERACTIVE=1 LG_BUDDY_SKIP_SYSTEMD_ACTIONS=1 LG_BUDDY_REMOVE_CONFIG=0 \
+    bash "$REPOSITORY_ROOT/uninstall.sh" >"$WORK_DIR/uninstall-refused.output" 2>&1; then
+    echo 'Uninstaller followed the machine binding directory link.' >&2; exit 1
+fi
+[ -x "$CUSTOM_ROOT/usr/bin/lg-buddy" ]
+[ -f "$CUSTOM_ROOT/etc/binding-backup/config-path" ]
+rm "$CUSTOM_ROOT/etc/lg-buddy"
+mv "$CUSTOM_ROOT/etc/binding-backup" "$CUSTOM_ROOT/etc/lg-buddy"
+mv "$CUSTOM_ROOT/etc/lg-buddy/config-path" "$WORK_DIR/binding-file"
+mkdir "$CUSTOM_ROOT/etc/lg-buddy/config-path"
+if HOME="$CUSTOM_HOME" XDG_CONFIG_HOME="$CUSTOM_HOME/.config" LG_BUDDY_INSTALL_ROOT="$CUSTOM_ROOT" \
+    LG_BUDDY_SUDO_CMD=none LG_BUDDY_NONINTERACTIVE=1 LG_BUDDY_SKIP_SYSTEMD_ACTIONS=1 LG_BUDDY_REMOVE_CONFIG=0 \
+    bash "$REPOSITORY_ROOT/uninstall.sh" >"$WORK_DIR/uninstall-invalid.output" 2>&1; then
+    echo 'Uninstaller accepted a non-file machine binding.' >&2; exit 1
+fi
+[ -x "$CUSTOM_ROOT/usr/bin/lg-buddy" ]
+rmdir "$CUSTOM_ROOT/etc/lg-buddy/config-path"
+mv "$WORK_DIR/binding-file" "$CUSTOM_ROOT/etc/lg-buddy/config-path"
+HOME="$CUSTOM_HOME" XDG_CONFIG_HOME="$CUSTOM_HOME/.config" LG_BUDDY_INSTALL_ROOT="$CUSTOM_ROOT" \
+    LG_BUDDY_SUDO_CMD=none LG_BUDDY_NONINTERACTIVE=1 LG_BUDDY_SKIP_SYSTEMD_ACTIONS=1 LG_BUDDY_REMOVE_CONFIG=0 \
+    bash "$REPOSITORY_ROOT/uninstall.sh" >"$WORK_DIR/uninstall.output" 2>&1
+[ ! -e "$CUSTOM_ROOT/etc/lg-buddy/config-path" ]
+[ ! -e "$CUSTOM_ROOT/usr/lib/lg-buddy/config-path" ]
+cmp "$WORK_DIR/configured.expected" "$CUSTOM_CONFIG"
+[ "$(cat "$CUSTOM_HOME/.config/lg-buddy/config-path")" = "$CUSTOM_CONFIG" ]
 
 # Headless handoff occurs after bootstrap, before common service setup.
 run_install headless --headless -- --non-interactive --yes --tv-ip 192.0.2.1 --tv-mac 02:11:22:33:44:55

@@ -440,7 +440,7 @@ fn running_steps_report_and_enforce_non_cancelability() {
 }
 
 #[test]
-fn settings_activate_vendor_lifecycle_without_a_bundle_pointer() {
+fn settings_activate_vendor_lifecycle_with_the_machine_binding() {
     let fixture = Fixture::new();
     let services = FakeServices::new(&fixture);
     for (old, new) in [
@@ -457,7 +457,6 @@ fn settings_activate_vendor_lifecycle_without_a_bundle_pointer() {
         fs::create_dir_all(destination.parent().unwrap()).unwrap();
         fs::rename(prefixed_path(Some(&fixture.root), old), destination).unwrap();
     }
-    fs::remove_file(prefixed_path(Some(&fixture.root), INSTALL_CONFIG_POINTER)).unwrap();
     assert!(matches!(
         fixture.inspect(ServiceStep::Lifecycle, &services),
         StepResponse::ActionRequired { .. }

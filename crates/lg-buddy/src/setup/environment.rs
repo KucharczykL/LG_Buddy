@@ -18,6 +18,7 @@ use std::{
 pub(super) struct SetupContext {
     pub config: PathBuf,
     pub user_units: PathBuf,
+    pub user_selection: PathBuf,
     pub system_root: PathBuf,
     pub kwin_helper: PathBuf,
     pub lock_path: PathBuf,
@@ -39,6 +40,8 @@ impl SetupContext {
         let config = std::path::absolute(config).map_err(context_failure)?;
         Ok(Self {
             config,
+            user_selection: crate::config::user_binding_path_from_env()
+                .ok_or_else(|| context_failure("User config home is unavailable."))?,
             user_units: user_units_directory(&home, env::var_os("XDG_CONFIG_HOME")),
             system_root: PathBuf::from("/"),
             kwin_helper: installed_kwin_helper(&env::current_exe().map_err(context_failure)?),
@@ -136,6 +139,7 @@ impl<C: ServiceController> NativeSteps<C> {
         super::provision::ServiceInstallation {
             config: &self.context.config,
             user_units: &self.context.user_units,
+            user_selection: &self.context.user_selection,
             system_root: &self.context.system_root,
             controller: &self.controller,
             authorization: self.context.authorization,
@@ -217,6 +221,7 @@ impl<C: ServiceController + Send> SetupSteps for NativeSteps<C> {
                         super::provision::ServiceInstallation {
                             config: &self.context.config,
                             user_units: &self.context.user_units,
+                            user_selection: &self.context.user_selection,
                             system_root: &self.context.system_root,
                             controller,
                             authorization: self.context.authorization,

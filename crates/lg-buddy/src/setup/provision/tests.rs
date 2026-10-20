@@ -8,6 +8,7 @@ struct Fixture {
     root: PathBuf,
     config: PathBuf,
     units: PathBuf,
+    selection: PathBuf,
     user: RefCell<BTreeMap<String, (bool, bool)>>,
     system: Cell<bool>,
     active: Cell<bool>,
@@ -41,6 +42,7 @@ impl Fixture {
         .unwrap();
         Self {
             units: root.join("user/systemd"),
+            selection: root.join("user/lg-buddy/config-path"),
             root,
             config,
             user: RefCell::new(BTreeMap::new()),
@@ -64,6 +66,7 @@ impl Fixture {
         ServiceInstallation {
             config: &self.config,
             user_units: &self.units,
+            user_selection: &self.selection,
             system_root: &self.root,
             controller: self,
             authorization: crate::setup::flow::AuthorizationMode::Noninteractive,
@@ -717,6 +720,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then main "$@"; fi
     let context = SetupContext {
         config: fixture.config.clone(),
         user_units: fixture.units.clone(),
+        user_selection: fixture.selection.clone(),
         system_root: fixture.root.clone(),
         kwin_helper: helper,
         lock_path: lock_path.clone(),
@@ -1095,7 +1099,7 @@ fn package_fixture(family: crate::upgrade_preflight::PackageFamily) -> Fixture {
 }
 
 #[test]
-fn package_setup_writes_only_dropins_and_preserves_vendor_assets() {
+fn package_setup_writes_dropins_and_machine_binding_and_preserves_vendor_assets() {
     use crate::upgrade_preflight::PackageFamily;
     for family in [
         PackageFamily::Dpkg,
@@ -1140,7 +1144,7 @@ fn package_setup_writes_only_dropins_and_preserves_vendor_assets() {
             .chain(fixture.plan().system_files().unwrap())
         {
             assert!(
-                spec.path.ends_with("config.conf"),
+                spec.path.ends_with("config.conf") || spec.path.ends_with("lg-buddy/config-path"),
                 "unexpected write: {}",
                 spec.path.display()
             );
@@ -1388,6 +1392,36 @@ fn package_setup_rejects_redirected_machine_and_user_dropins_before_mutation() {
                     .join("etc/systemd/system/LG_Buddy.service.d/config.conf")
                     .exists());
             }
+        }
+    }
+}
+
+#[test]
+fn binding_directory_links_are_refused_before_authorization_in_both_layouts() {
+    for package in [false, true] {
+        for user in [false, true] {
+            let fixture = if package {
+                package_fixture(crate::upgrade_preflight::PackageFamily::Dpkg)
+            } else {
+                Fixture::new()
+            };
+            let directory = if user {
+                fixture.selection.parent().unwrap().to_path_buf()
+            } else {
+                fixture.root.join("etc/lg-buddy")
+            };
+            let external = fixture.root.join("redirected-binding");
+            fs::create_dir_all(&external).unwrap();
+            fs::write(external.join("config-path"), "retained\n").unwrap();
+            fs::create_dir_all(directory.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(&external, &directory).unwrap();
+            assert!(matches!(fixture.plan().inspect(), StepResponse::Blocked(_)));
+            assert!(matches!(fixture.run(), StepResponse::Blocked(_)));
+            assert!(fixture.calls.borrow().is_empty());
+            assert_eq!(
+                fs::read_to_string(external.join("config-path")).unwrap(),
+                "retained\n"
+            );
         }
     }
 }

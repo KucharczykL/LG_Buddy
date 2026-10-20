@@ -155,7 +155,6 @@ SCREEN_IDLE_BLANK="disabled"
 SYSTEM_SLEEP_WAKE_POLICY="disabled"
 UPDATE_AUTO_CHECK="enabled"
 SYSTEM_CONFIG_OVERRIDE_TMP=""
-CONFIG_POINTER_TMP=""
 NM_HOOK_TMP=""
 SYSTEM_UPGRADE_OUTPUT_TMP=""
 PM=""
@@ -200,7 +199,6 @@ initialize_install_paths() {
     GUI_INSTALL_PATH="${SYSTEM_BIN_DIR}/lg-buddy-gui"
     VENV_DIR="${SYSTEM_BIN_DIR}/LG_Buddy_PIP"
     SYSTEM_LIB_DIR="$(prefix_path "/usr/lib/lg-buddy")"
-    CONFIG_POINTER_PATH="${SYSTEM_LIB_DIR}/config-path"
     COMMON_HELPER_PATH="${SYSTEM_LIB_DIR}/common.sh"
     KWIN_PAYLOAD_DIR="$SCRIPT_DIR/data/kwin"
     if [ ! -d "$KWIN_PAYLOAD_DIR" ]; then KWIN_PAYLOAD_DIR="$SCRIPT_DIR/docs/kwin"; fi
@@ -253,10 +251,6 @@ if [ ! -r "$SCRIPT_DIR/bin/LG_Buddy_Common" ]; then
     exit 1
 fi
 . "$SCRIPT_DIR/bin/LG_Buddy_Common"
-
-if [ "$SYSTEM_UPGRADE_MODE" -eq 0 ]; then
-    CONFIG_FILE="$(lg_buddy_user_config_path)"
-fi
 
 config_has_saved_tv_profile() {
     local ip=""
@@ -425,13 +419,6 @@ Environment="LG_BUDDY_CONFIG=$escaped_config_path"
 EOF
 }
 
-write_config_pointer() {
-    local pointer_file="$1"
-    local config_path="$2"
-
-    printf '%s\n' "$config_path" >"$pointer_file"
-}
-
 write_nm_pre_down_hook() {
     local hook_file="$1"
 
@@ -495,6 +482,9 @@ run_system_mutation_command() {
 }
 
 perform_privileged_runtime_installation() {
+    # Seed the durable /etc binding before replacing the runtime. The native
+    # writer refuses conflicts and redirected paths and retains legacy input.
+    run_system_mutation_command "$RUNTIME_BINARY" config-binding migrate "${INSTALL_ROOT:-/}" "$CONFIG_FILE"
     if [ "$REMOVE_LEGACY_ENVIRONMENT" -eq 1 ]; then
         MUTATION_STARTED=1
         system_upgrade_message "Removing the obsolete LG Buddy Python environment at $VENV_DIR..."
@@ -517,12 +507,7 @@ perform_privileged_runtime_installation() {
         run_system_mutation_command rm -f "${SYSTEM_BIN_DIR}/LG_Buddy_sleep_pre"
         run_system_mutation_command rm -f "${SYSTEM_BIN_DIR}/LG_Buddy_Brightness"
         run_system_mutation_command rm -f "$COMMON_HELPER_PATH"
-        run_system_mutation_command rm -f "$CONFIG_POINTER_PATH"
         run_system_mutation_command rmdir "$SYSTEM_LIB_DIR" 2>/dev/null || true
-    fi
-    if [ "$UPGRADE_MODE" -eq 0 ]; then
-        run_system_mutation_command install -d "$SYSTEM_LIB_DIR"
-        run_system_mutation_command install -m 644 "$CONFIG_POINTER_TMP" "$CONFIG_POINTER_PATH"
     fi
     local setup_source="$SCRIPT_DIR/data/setup-services.sh"
     local setup_policy="$SCRIPT_DIR/data/io.github.staphylococcus.LGBuddy.setup.policy"
@@ -645,6 +630,8 @@ run_system_upgrade_helper() {
     [ -x "$RUNTIME_BINARY" ] || exit 2
     [ -x "$GUI_BINARY" ] || exit 2
     initialize_install_paths
+    CONFIG_FILE="$("$RUNTIME_BINARY" config-binding inspect "${INSTALL_ROOT:-/}")"
+    [ -n "$CONFIG_FILE" ] || exit 2
     SYSTEM_UPGRADE_MUTATION_EMITTED=0
 
     system_upgrade_status authorized
@@ -795,12 +782,6 @@ check_install_prerequisites() {
 }
 
 load_upgrade_configuration() {
-    CONFIG_FILE="$(sed -n '/[^[:space:]]/{p;q;}' "$CONFIG_POINTER_PATH")"
-    [ -n "$CONFIG_FILE" ] || {
-        echo "Installed config pointer is empty: $CONFIG_POINTER_PATH"
-        exit 1
-    }
-
     SCREEN_IDLE_BLANK="$(LG_BUDDY_CONFIG="$CONFIG_FILE" "$RUNTIME_BINARY" settings get screen.idle_blank)"
     SYSTEM_SLEEP_WAKE_POLICY="$(LG_BUDDY_CONFIG="$CONFIG_FILE" "$RUNTIME_BINARY" settings get system.sleep_wake_policy)"
     UPDATE_AUTO_CHECK="$(LG_BUDDY_CONFIG="$CONFIG_FILE" "$RUNTIME_BINARY" settings get updates.auto_check)"
@@ -819,10 +800,6 @@ load_existing_configuration() {
 }
 
 prepare_installation_files() {
-    if [ "$UPGRADE_MODE" -eq 0 ]; then
-        CONFIG_POINTER_TMP="$(mktemp)"
-        write_config_pointer "$CONFIG_POINTER_TMP" "$CONFIG_FILE"
-    fi
     SYSTEM_CONFIG_OVERRIDE_TMP="$(mktemp)"
     write_config_override "$SYSTEM_CONFIG_OVERRIDE_TMP" "$CONFIG_FILE"
     NM_HOOK_TMP="$(mktemp)"
@@ -834,10 +811,6 @@ cleanup() {
 
     if [ -n "$SYSTEM_CONFIG_OVERRIDE_TMP" ]; then
         rm -f "$SYSTEM_CONFIG_OVERRIDE_TMP"
-    fi
-
-    if [ -n "$CONFIG_POINTER_TMP" ]; then
-        rm -f "$CONFIG_POINTER_TMP"
     fi
 
     if [ -n "$NM_HOOK_TMP" ]; then
@@ -875,6 +848,13 @@ fi
 trap cleanup EXIT
 
 resolve_runtime_binary
+# Resolve installed state before any fresh-install decision. A valid /etc
+# binding is authoritative; only its absence permits legacy migration input.
+CONFIG_FILE="$("$RUNTIME_BINARY" config-binding inspect "${INSTALL_ROOT:-/}")"
+if [ -z "$CONFIG_FILE" ]; then
+    [ "$UPGRADE_MODE" -eq 0 ] || { echo "Installed machine config binding is missing." >&2; exit 1; }
+    CONFIG_FILE="$(lg_buddy_user_config_path)"
+fi
 REMOVE_LEGACY_ENVIRONMENT=0
 
 if [ "$UPGRADE_MODE" -eq 0 ] && ! config_has_saved_tv_profile; then
@@ -910,6 +890,10 @@ else
     fi
 fi
 
+# Retain custom locations for subsequent GUI/CLI launches by this user. This
+# never writes another user's selection and never changes the machine binding.
+CONFIG_FILE="$(readlink -f -- "$CONFIG_FILE")"
+"$RUNTIME_BINARY" config-binding remember "$CONFIG_FILE"
 prepare_installation_files
 
 if [ "$SKIP_SYSTEMD_ACTIONS" != 1 ] && [ -f "$USER_KWIN_SERVICE_PATH" ]; then

@@ -243,7 +243,8 @@ pub fn run_sleep<W: Write>(writer: &mut W) -> Result<(), RunError> {
 }
 
 pub fn run_nm_pre_down<W: Write>(writer: &mut W) -> Result<(), RunError> {
-    let config_path = resolve_config_path_from_env().map_err(RunError::ConfigPath)?;
+    let config_path =
+        crate::config::resolve_machine_config_path_from_env().map_err(RunError::ConfigPath)?;
     let current = load_current_config(&config_path)?;
     let config = current.config;
     let marker = ScreenOwnershipMarker::from_env(StateScope::System).map_err(RunError::StateDir)?;

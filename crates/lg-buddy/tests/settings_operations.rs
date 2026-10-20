@@ -456,7 +456,7 @@ fn sleep_activation_authorizes_before_saving_and_reuses_the_active_service() {
     let install_root = config.path().parent().unwrap().join("installed");
     for (name, contents) in [
         (
-            "usr/lib/lg-buddy/config-path",
+            "etc/lg-buddy/config-path",
             config.path().to_str().unwrap(),
         ),
         ("etc/systemd/system/LG_Buddy_lifecycle.service", "fixture"),
