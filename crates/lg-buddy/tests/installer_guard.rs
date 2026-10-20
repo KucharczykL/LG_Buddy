@@ -95,6 +95,7 @@ case "$0" in
     */rpm) printf 'file %s is not owned by any package\n' "$path" >&2; exit 1 ;;
     */pacman) printf 'error: No package owns %s\n' "$path" >&2; exit 1 ;;
 esac
+printf '%s\n' "$path" >> "$TEST_QUERY_LOG"
 if [ "$path" = "${TEST_OWNED_PATH:-}" ]; then
     case "${TEST_DB_MODE:-owned}" in
         owned) printf 'fixture-owner: %s\n' "$path"; exit 0 ;;
@@ -172,6 +173,7 @@ exit 1
             .env("TEST_REAL_RUNTIME", env!("CARGO_BIN_EXE_lg-buddy"))
             .env("TEST_SERVICE_ACTION", self.directory.join("service-action"))
             .env("TEST_HANDOFF", self.directory.join("handoff"))
+            .env("TEST_QUERY_LOG", self.directory.join("ownership-queries"))
             .env(
                 "TEST_PREREQUISITE_PROBE",
                 self.directory.join("prerequisite-probe"),
@@ -243,6 +245,20 @@ fn snapshot(root: &Path) -> Vec<(PathBuf, u32, u32, Vec<u8>)> {
     visit(root, root, &mut result);
     result.sort();
     result
+}
+
+fn assert_installed_files_were_checked(fixture: &Fixture) {
+    let queries = fs::read_to_string(fixture.directory.join("ownership-queries")).unwrap();
+    for (relative, _, _, _) in snapshot(&fixture.root) {
+        let path = fixture.root.join(relative);
+        if fs::symlink_metadata(&path).unwrap().is_file() {
+            assert!(
+                queries.lines().any(|query| Path::new(query) == path),
+                "installed without an ownership check: {}",
+                path.display()
+            );
+        }
+    }
 }
 
 #[test]
@@ -358,7 +374,10 @@ fn authorized_upgrade_helper_rechecks_the_entire_plan_before_mutation() {
 fn unowned_bundle_install_and_upgrade_still_work() {
     for configured in [false, true] {
         let f = Fixture::new(configured);
-        let output = f.install("unowned", "owned", false, false);
+        let shared = f.root.join("usr/bin");
+        fs::create_dir_all(&shared).unwrap();
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o711)).unwrap();
+        let output = f.install("usr/bin", "owned", false, false);
         assert!(
             output.status.success(),
             "{}{}",
@@ -367,12 +386,15 @@ fn unowned_bundle_install_and_upgrade_still_work() {
         );
         assert!(f.root.join("usr/bin/lg-buddy").is_file());
         assert!(f.root.join("etc/lg-buddy/config-path").is_file());
+        assert_installed_files_were_checked(&f);
+        assert_eq!(fs::metadata(&shared).unwrap().mode() & 0o777, 0o711);
         if !configured {
             assert!(f.directory.join("handoff").is_file());
         }
         if configured {
             let config = fs::read(f.home.join(".config/lg-buddy/config.env")).unwrap();
-            let output = f.install("unowned", "owned", true, false);
+            fs::remove_file(f.directory.join("ownership-queries")).unwrap();
+            let output = f.install("usr/bin", "owned", true, false);
             assert!(
                 output.status.success(),
                 "{}{}",
@@ -383,6 +405,8 @@ fn unowned_bundle_install_and_upgrade_still_work() {
                 fs::read(f.home.join(".config/lg-buddy/config.env")).unwrap(),
                 config
             );
+            assert_installed_files_were_checked(&f);
+            assert_eq!(fs::metadata(&shared).unwrap().mode() & 0o777, 0o711);
         }
     }
 }
