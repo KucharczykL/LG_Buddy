@@ -31,6 +31,13 @@ pub fn run_kwin_setup(args: &[String]) -> u8 {
     }
 }
 
+/// Internal, read-only ownership query for the installed privileged helper.
+pub fn service_setup_ownership(
+    path: &std::path::Path,
+) -> Result<&'static str, crate::settings::SettingsError> {
+    provision::service_setup_ownership(path)
+}
+
 /// Domain errors are normalized by the step, never interpreted by its caller.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepFailure {

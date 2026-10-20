@@ -60,8 +60,22 @@ impl ServiceStep {
                 services.user_service_is_active(SCREEN_SERVICE)
             }
             Self::Lifecycle => {
-                if let Err(error) = validate_config_pointer(config_path, install_root)
-                    .and_then(|()| validate_sleep_installation(install_root))
+                // Package installs bind the service through a dynamic drop-in;
+                // they do not create the old bundle pointer under /usr/lib.
+                let vendor = prefixed_path(
+                    install_root,
+                    "/usr/lib/systemd/system/LG_Buddy_lifecycle.service",
+                )
+                .is_file();
+                let binding = if vendor {
+                    services
+                        .system_service_config_path("LG_Buddy_lifecycle.service")
+                        .and_then(|path| validate_matching_config(config_path, &path))
+                } else {
+                    validate_config_pointer(config_path, install_root)
+                };
+                if let Err(error) =
+                    binding.and_then(|()| validate_sleep_installation(install_root, vendor))
                 {
                     return self.blocked(
                         "LG Buddy's system service installation needs repair.",
@@ -216,28 +230,39 @@ fn validate_matching_config(
 ) -> Result<(), SettingsError> {
     let service_config =
         fs::canonicalize(service_config).map_err(|error| SettingsError::Activation {
-            message: format!("the screen service's configuration could not be resolved: {error}"),
+            message: format!("the service's configuration could not be resolved: {error}"),
         })?;
     let config_path = fs::canonicalize(config_path).map_err(|error| SettingsError::Activation {
         message: format!("the active configuration could not be resolved: {error}"),
     })?;
     if service_config != config_path {
         return Err(SettingsError::Activation {
-            message: "the screen service's configuration does not match the active configuration."
+            message: "the service's configuration does not match the active configuration."
                 .to_string(),
         });
     }
     Ok(())
 }
 
-fn validate_sleep_installation(install_root: Option<&Path>) -> Result<(), SettingsError> {
+fn validate_sleep_installation(
+    install_root: Option<&Path>,
+    vendor: bool,
+) -> Result<(), SettingsError> {
+    let (unit, hook) = if vendor {
+        (
+            "/usr/lib/systemd/system/LG_Buddy_lifecycle.service",
+            "/usr/lib/NetworkManager/dispatcher.d/pre-down.d/LG_Buddy_lifecycle",
+        )
+    } else {
+        (LIFECYCLE_UNIT, NETWORK_MANAGER_HOOK)
+    };
     for (path, label) in [
         (
-            prefixed_path(install_root, LIFECYCLE_UNIT),
+            prefixed_path(install_root, unit),
             "the installed lifecycle service",
         ),
         (
-            prefixed_path(install_root, NETWORK_MANAGER_HOOK),
+            prefixed_path(install_root, hook),
             "the installed NetworkManager sleep hook",
         ),
     ] {
