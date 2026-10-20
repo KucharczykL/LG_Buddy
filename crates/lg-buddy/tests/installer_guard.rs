@@ -92,7 +92,7 @@ esac
             r#"#!/bin/sh
 for path do :; done
 case "$0" in
-    */rpm) printf 'file %s is not owned by any package\n' "$path" >&2; exit 1 ;;
+    */rpm) printf 'file %s is not owned by any package\n' "$path"; exit 1 ;;
     */pacman) printf 'error: No package owns %s\n' "$path" >&2; exit 1 ;;
 esac
 printf '%s\n' "$path" >> "$TEST_QUERY_LOG"
@@ -407,6 +407,93 @@ fn unowned_bundle_install_and_upgrade_still_work() {
             );
             assert_installed_files_were_checked(&f);
             assert_eq!(fs::metadata(&shared).unwrap().mode() & 0o777, 0o711);
+        }
+    }
+}
+
+#[test]
+fn legacy_service_links_are_checked_before_cleanup() {
+    use std::os::unix::fs::symlink;
+
+    for owned in [true, false] {
+        let f = Fixture::new(true);
+        let systemd = f.root.join("etc/systemd/system");
+        write(
+            &systemd.join("LG_Buddy_sleep.service"),
+            "[Service]\nExecStart=/bin/true\n[Install]\nWantedBy=sleep.target\nAlso=unrelated.service\n",
+            0o644,
+        );
+        let links = [
+            "sleep.target.wants/LG_Buddy_sleep.service",
+            "legacy-alias.service",
+            "custom target with spaces.wants/legacy-alias.service",
+        ];
+        for (link, target) in links.iter().zip([
+            "../LG_Buddy_sleep.service",
+            "LG_Buddy_sleep.service",
+            "../legacy-alias.service",
+        ]) {
+            let path = systemd.join(link);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            symlink(target, path).unwrap();
+        }
+        let unrelated = systemd.join("sleep.target.wants/unrelated.service");
+        symlink("../unrelated.service", &unrelated).unwrap();
+        // Exercise real systemctl if the installer unexpectedly calls disable;
+        // its implicit alias/Also= removals must never bypass the checked plan.
+        write(
+            &f.directory.join("stubs/systemctl"),
+            "#!/bin/sh\n: > \"$TEST_SERVICE_ACTION\"\n[ \"${1:-}\" != disable ] || exec /usr/bin/real-systemctl --root \"$LG_BUDDY_INSTALL_ROOT\" \"$@\"\nexit 0\n",
+            0o755,
+        );
+        let real_systemctl = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+            .map(|directory| directory.join("systemctl"))
+            .find(|path| path.is_file())
+            .expect("systemctl is required for legacy cleanup coverage");
+        let root_before = snapshot(&f.root);
+        let home_before = snapshot(&f.home);
+        let output = f
+            .sandbox(false)
+            .args(["--ro-bind"])
+            .arg(real_systemctl)
+            .arg("/usr/bin/real-systemctl")
+            .env("LG_BUDDY_SKIP_SYSTEMD_ACTIONS", "0")
+            .env(
+                "TEST_OWNED_PATH",
+                if owned {
+                    systemd.join(links[0])
+                } else {
+                    f.root.join("unowned")
+                },
+            )
+            .arg("/usr/bin/bash")
+            .arg(f.bundle.join("install.sh"))
+            .output()
+            .unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if owned {
+            assert!(!output.status.success(), "{text}");
+            assert!(text.contains("fixture-owner"), "{text}");
+            assert_eq!(snapshot(&f.root), root_before, "{text}");
+            assert_eq!(snapshot(&f.home), home_before, "{text}");
+            assert!(!f.directory.join("service-action").exists(), "{text}");
+            assert!(!f.directory.join("prerequisite-probe").exists(), "{text}");
+        } else {
+            assert!(output.status.success(), "{text}");
+            let queries = fs::read_to_string(f.directory.join("ownership-queries")).unwrap();
+            for link in links {
+                let path = systemd.join(link);
+                assert!(
+                    queries.contains(path.to_str().unwrap()),
+                    "{link}: {queries}"
+                );
+                assert!(!path.is_symlink(), "{link}");
+            }
+            assert!(unrelated.is_symlink());
         }
     }
 }

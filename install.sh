@@ -246,6 +246,33 @@ initialize_install_paths() {
 
 initialize_install_paths
 
+# Collect the exact legacy links we will unlink. Unlike systemctl disable, this
+# cannot expand the mutation set later through aliases or an Also= directive.
+collect_legacy_service_links() {
+    LEGACY_SERVICE_LINKS=()
+    [ -d "$SYSTEMD_SYSTEM_DIR" ] || return 0
+    local -a remaining=()
+    local -A retired=([LG_Buddy_wake.service]=1 [LG_Buddy_sleep.service]=1)
+    local index link target changed=1
+    mapfile -d '' -t remaining < <(find -P "$SYSTEMD_SYSTEM_DIR" -type l -print0)
+    wait "$!" || return 1
+    # Include aliases, then links to those aliases, without following directory
+    # symlinks or losing spaces/newlines in paths.
+    while [ "$changed" -eq 1 ]; do
+        changed=0
+        for index in "${!remaining[@]}"; do
+            link="${remaining[$index]}"
+            target="$(readlink -- "$link")" || return 1
+            if [ "${retired[${target##*/}]:-0}" -eq 1 ]; then
+                LEGACY_SERVICE_LINKS+=("$link")
+                retired[${link##*/}]=1
+                unset 'remaining[index]'
+                changed=1
+            fi
+        done
+    done
+}
+
 # The same resolved paths drive both preflight and mutation. Existing shared
 # directories are reused by mkdir -p; only missing directories are created.
 preflight_installation() {
@@ -258,6 +285,7 @@ preflight_installation() {
         file "$APP_ICON_PATH"
     )
     local name setup_source="$SCRIPT_DIR/data/setup-services.sh"
+    LEGACY_SERVICE_LINKS=()
     if [ "$REMOVE_LEGACY_ENVIRONMENT" -eq 1 ]; then
         plan+=(tree "$VENV_DIR")
     fi
@@ -294,6 +322,12 @@ preflight_installation() {
                 link "$SYSTEMD_SYSTEM_DIR/multi-user.target.wants/LG_Buddy_lifecycle.service")
         fi
         if [ "$UPGRADE_MODE" -eq 0 ]; then
+            if [ "$SKIP_SYSTEMD_ACTIONS" != 1 ]; then
+                collect_legacy_service_links
+                for name in "${LEGACY_SERVICE_LINKS[@]}"; do
+                    plan+=(remove "$name")
+                done
+            fi
             plan+=(remove "$SYSTEMD_WAKE_SERVICE_PATH" remove "$SYSTEMD_SLEEP_SERVICE_PATH"
                 remove "$SYSTEMD_WAKE_OVERRIDE_DIR/config.conf" remove "$SYSTEMD_SLEEP_OVERRIDE_DIR/config.conf"
                 rmdir "$SYSTEMD_WAKE_OVERRIDE_DIR" rmdir "$SYSTEMD_SLEEP_OVERRIDE_DIR"
@@ -495,8 +529,9 @@ cleanup_legacy_sleep_wake_handlers() {
     if [ "$SKIP_SYSTEMD_ACTIONS" = "1" ]; then
         echo "Skipping legacy sleep/wake systemctl cleanup because LG_BUDDY_SKIP_SYSTEMD_ACTIONS=1."
     else
-        run_privileged systemctl disable LG_Buddy_wake.service 2>/dev/null || true
-        run_privileged systemctl disable LG_Buddy_sleep.service 2>/dev/null || true
+        if [ "${#LEGACY_SERVICE_LINKS[@]}" -gt 0 ]; then
+            run_privileged rm -f -- "${LEGACY_SERVICE_LINKS[@]}"
+        fi
         run_privileged systemctl stop LG_Buddy_wake.service 2>/dev/null || true
         run_privileged systemctl stop LG_Buddy_sleep.service 2>/dev/null || true
     fi

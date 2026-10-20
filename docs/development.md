@@ -157,6 +157,8 @@ uses filesystem mount facts to reject read-only targets. Owned or conflicting
 paths and unavailable ownership information all refuse installation with a
 path-specific error. Recursive cleanup and copied KWin payload members are
 included, even when the destination does not exist yet.
+Legacy service enablement and alias links are collected before preflight and
+only those checked links are removed during cleanup.
 
 This check runs before dependency installation, temporary installation files,
 user config/selection writes, or service changes. The authorized graphical
