@@ -292,14 +292,6 @@ cleanup() {
 
 trap cleanup EXIT
 
-# Keep the graphical authorization boundary covered by the canonical release
-# smoke lane. The focused test uses isolated fixtures and never invokes the
-# host's authentication agent or installation paths.
-bash "$SCRIPT_DIR/test-installer-graphical-auth.sh"
-# Exercise fresh-install handoff and failure preservation with an isolated
-# regular-user fixture before testing the extracted bundle's full payload.
-bash "$SCRIPT_DIR/test-installer-first-run.sh"
-
 EXTRACT_DIR="$WORK_DIR/extracted"
 INSTALL_ROOT="$WORK_DIR/root"
 HOME_DIR="$WORK_DIR/home"
@@ -330,13 +322,14 @@ python3 "$SCRIPT_DIR/release_bundle_manifest.py" validate \
 validate_archive_paths "$ARCHIVE"
 tar -C "$EXTRACT_DIR" -xzf "$ARCHIVE"
 BUNDLE_DIR="$(find "$EXTRACT_DIR" -mindepth 1 -maxdepth 1 -type d | head -n1)"
-BUNDLE_GUI="$BUNDLE_DIR/docs/lg-buddy-gui-$GUI_TARGET"
-BUNDLE_ICON="$BUNDLE_DIR/docs/io.github.staphylococcus.LGBuddy.svg"
 
 [ -n "$BUNDLE_DIR" ] || {
     echo "Release archive did not contain a top-level bundle directory."
     exit 1
 }
+BUNDLE_DIR="$(CDPATH='' cd -- "$BUNDLE_DIR" && pwd)"
+BUNDLE_GUI="$BUNDLE_DIR/docs/lg-buddy-gui-$GUI_TARGET"
+BUNDLE_ICON="$BUNDLE_DIR/docs/io.github.staphylococcus.LGBuddy.svg"
 
 assert_executable "$BUNDLE_DIR/install.sh"
 assert_executable "$BUNDLE_DIR/configure.sh"
@@ -430,6 +423,12 @@ assert_executable "$BUNDLE_GUI"
     echo "Bundled GUI identity did not match the runtime candidate."
     exit 1
 }
+# Use the verified archive runtime for isolated installer fixtures so this lane
+# also works in a clean checkout without a local Cargo build.
+# The graphical fixture never invokes the host's authentication agent or paths.
+bash "$SCRIPT_DIR/test-installer-graphical-auth.sh" "$BUNDLE_DIR/lg-buddy"
+bash "$SCRIPT_DIR/test-installer-first-run.sh" "$BUNDLE_DIR/lg-buddy"
+
 bash "$SCRIPT_DIR/test-release-linkage.sh" "$BUNDLE_DIR/lg-buddy" "$BUNDLE_GUI"
 bash "$SCRIPT_DIR/test-installer-gui-dependencies.sh" \
     "$BUNDLE_DIR/install.sh" "$BUNDLE_DIR/lg-buddy" "$BUNDLE_GUI" apt
