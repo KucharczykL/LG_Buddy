@@ -251,3 +251,57 @@ fn binding_directories_are_safe_with_a_restrictive_installer_umask() {
         );
     }
 }
+
+#[test]
+fn absent_user_selection_allows_defaults_through_symlinked_config_directories() {
+    for (relative, use_xdg) in [
+        (".config", false),
+        (".config", true),
+        (".config/lg-buddy", true),
+    ] {
+        let fixture = Fixture::new();
+        let linked = fixture.home.join(relative);
+        let storage = fixture.home.with_file_name("config-storage");
+        fs::rename(&linked, &storage).unwrap();
+        std::os::unix::fs::symlink(&storage, &linked).unwrap();
+        assert!(!fixture.home.join(".config/lg-buddy/config-path").exists());
+        let mut command = fixture.command();
+        if !use_xdg {
+            command.env_remove("XDG_CONFIG_HOME");
+        }
+        assert_eq!(
+            success(command.args(["settings", "get", "tv.ip"]).output().unwrap()).trim(),
+            "192.0.2.21",
+        );
+    }
+}
+
+#[test]
+fn symlinked_user_config_directory_still_refuses_selection_records_and_writes() {
+    let fixture = Fixture::new();
+    let linked = fixture.home.join(".config");
+    let storage = fixture.home.with_file_name("config-storage");
+    fs::rename(&linked, &storage).unwrap();
+    std::os::unix::fs::symlink(&storage, &linked).unwrap();
+    let record = storage.join("lg-buddy/config-path");
+    let output = fixture
+        .command()
+        .args(["config-binding", "remember"])
+        .arg(&fixture.custom)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("symlink"));
+    assert!(!record.exists());
+
+    fs::write(&record, format!("{}\n", fixture.custom.display())).unwrap();
+    let original = fs::read(&record).unwrap();
+    let output = fixture
+        .command()
+        .args(["settings", "get", "tv.ip"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("symlink"));
+    assert_eq!(fs::read(record).unwrap(), original);
+}

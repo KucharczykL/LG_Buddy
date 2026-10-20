@@ -56,12 +56,14 @@ pub(crate) fn safe_destination(path: &Path) -> io::Result<()> {
 }
 
 pub(crate) fn read(path: &Path, owner: u32) -> io::Result<Option<PathBuf>> {
-    safe_destination(path)?;
+    // An absent user selector must allow normal default config discovery,
+    // including when the user's config directory itself is a symlink.
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
+    safe_destination(path)?;
     if !metadata.is_file() || metadata.uid() != owner || metadata.mode() & 0o022 != 0 {
         return Err(invalid(format!("config binding must be a regular file owned by uid {owner}, without group/other writes: {}", path.display())));
     }
@@ -422,6 +424,23 @@ mod tests {
             assert!(migrate(&fixture.0, &config).is_err());
             assert_eq!(fs::read_to_string(&sentinel).unwrap(), "unchanged\n");
         }
+    }
+
+    #[test]
+    fn missing_machine_binding_below_a_symlink_never_falls_back_or_writes() {
+        let fixture = Fixture::new();
+        let config = fixture.config();
+        let legacy = fixture.seed(LEGACY_BINDING, &format!("{}\n", config.display()));
+        let original = fs::read(&legacy).unwrap();
+        let external = fixture.0.join("external");
+        fs::create_dir(&external).unwrap();
+        let pointer = system_path(&fixture.0, MACHINE_BINDING);
+        fs::create_dir_all(pointer.parent().unwrap().parent().unwrap()).unwrap();
+        symlink(&external, pointer.parent().unwrap()).unwrap();
+        assert!(installed(&fixture.0).is_err());
+        assert!(migrate(&fixture.0, &config).is_err());
+        assert_eq!(fs::read(&legacy).unwrap(), original);
+        assert!(!external.join("config-path").exists());
     }
 
     #[test]
