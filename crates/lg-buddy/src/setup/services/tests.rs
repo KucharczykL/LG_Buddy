@@ -146,6 +146,10 @@ impl ServiceController for FakeServices {
         panic!("setup must not disable a service")
     }
 
+    fn system_service_config_path(&self, _: &str) -> Result<PathBuf, SettingsError> {
+        Ok(self.config.borrow().clone())
+    }
+
     fn system_lifecycle_is_active(&self) -> Result<bool, SettingsError> {
         self.observe()
     }
@@ -433,4 +437,41 @@ fn running_steps_report_and_enforce_non_cancelability() {
         assert!(!cancellation.cancel());
         assert_eq!(services.actions.borrow().len(), 1);
     }
+}
+
+#[test]
+fn settings_activate_vendor_lifecycle_without_a_bundle_pointer() {
+    let fixture = Fixture::new();
+    let services = FakeServices::new(&fixture);
+    for (old, new) in [
+        (
+            LIFECYCLE_UNIT,
+            "/usr/lib/systemd/system/LG_Buddy_lifecycle.service",
+        ),
+        (
+            NETWORK_MANAGER_HOOK,
+            "/usr/lib/NetworkManager/dispatcher.d/pre-down.d/LG_Buddy_lifecycle",
+        ),
+    ] {
+        let destination = prefixed_path(Some(&fixture.root), new);
+        fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        fs::rename(prefixed_path(Some(&fixture.root), old), destination).unwrap();
+    }
+    fs::remove_file(prefixed_path(Some(&fixture.root), INSTALL_CONFIG_POINTER)).unwrap();
+    assert!(matches!(
+        fixture.inspect(ServiceStep::Lifecycle, &services),
+        StepResponse::ActionRequired { .. }
+    ));
+    *services.config.borrow_mut() = fixture.root.join("different.env");
+    assert!(matches!(
+        fixture.inspect(ServiceStep::Lifecycle, &services),
+        StepResponse::Blocked(_)
+    ));
+    assert!(services.actions.borrow().is_empty());
+    *services.config.borrow_mut() = fixture.config.clone();
+    assert_eq!(
+        fixture.execute(ServiceStep::Lifecycle, &services),
+        StepResponse::Complete
+    );
+    assert_eq!(*services.actions.borrow(), ["authorize-start-lifecycle"]);
 }

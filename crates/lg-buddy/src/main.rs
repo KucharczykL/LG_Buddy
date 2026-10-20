@@ -11,6 +11,31 @@ fn main() -> ExitCode {
         return ExitCode::from(lg_buddy::setup::run_kwin_setup(&arguments[1..]));
     }
 
+    if arguments
+        .first()
+        .is_some_and(|arg| arg == "service-setup-ownership")
+    {
+        let path = std::path::Path::new(
+            arguments
+                .get(1)
+                .map(String::as_str)
+                .unwrap_or("/usr/bin/lg-buddy"),
+        );
+        if arguments.len() > 2 || !path.is_absolute() {
+            return ExitCode::from(2);
+        }
+        return match lg_buddy::setup::service_setup_ownership(path) {
+            Ok(ownership) => {
+                println!("{ownership}");
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("LG Buddy: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+
     match parse_args(arguments) {
         Ok(ParseOutcome::Help(topic)) => {
             print!("{}", help(&program, topic));

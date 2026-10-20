@@ -74,6 +74,7 @@ fn user_units_directory(home: &Path, xdg_config_home: Option<OsString>) -> PathB
 pub(super) struct NativeSteps<C = SystemdUserServiceController> {
     pub context: SetupContext,
     pub controller: C,
+    pub package_database: crate::upgrade_preflight::PackageDatabase,
 }
 
 pub(super) fn restart_verifier() -> Result<(), StepFailure> {
@@ -125,6 +126,7 @@ impl NativeSteps {
         Self {
             context,
             controller: SystemdUserServiceController::from_env(),
+            package_database: crate::upgrade_preflight::PackageDatabase::system(),
         }
     }
 }
@@ -137,6 +139,24 @@ impl<C: ServiceController> NativeSteps<C> {
             system_root: &self.context.system_root,
             controller: &self.controller,
             authorization: self.context.authorization,
+            ownership: self.service_ownership(),
+            package_database: &self.package_database,
+        }
+    }
+    fn service_ownership(
+        &self,
+    ) -> Result<
+        crate::upgrade_preflight::PathOwnership,
+        crate::upgrade_preflight::PackageDatabaseError,
+    > {
+        // Immutable installation assessment retains its existing external repair boundary.
+        if self.context.system_root.join("etc/NIXOS").exists()
+            || self.context.system_root.join("run/ostree-booted").exists()
+        {
+            Ok(crate::upgrade_preflight::PathOwnership::Unowned)
+        } else {
+            self.package_database
+                .owner_of(&self.context.system_root.join("usr/bin/lg-buddy"))
         }
     }
     fn plasma(&self) -> super::kwin::KWinSetup<'_> {
@@ -200,6 +220,8 @@ impl<C: ServiceController + Send> SetupSteps for NativeSteps<C> {
                             system_root: &self.context.system_root,
                             controller,
                             authorization: self.context.authorization,
+                            ownership: self.service_ownership(),
+                            package_database: &self.package_database,
                         }
                         .execute(cancellation, progress)
                     },

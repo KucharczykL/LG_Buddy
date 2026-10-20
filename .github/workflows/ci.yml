@@ -117,7 +117,7 @@ jobs:
       - name: Verify setup helpers and KWin fallbacks
         run: |
           bash -n data/setup-services.sh scripts/test-service-setup.sh
-          bash scripts/test-service-setup.sh
+          bash scripts/test-service-setup.sh ./target/debug/lg-buddy
           bash scripts/test-kwin-setup.sh
           python3 scripts/test_kwin_matrix.py
 
