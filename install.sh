@@ -953,15 +953,19 @@ if [ "$UPGRADE_MODE" -eq 0 ] && ! config_has_saved_tv_profile; then
     FRESH_SETUP_MODE=1
 fi
 
-if [ "$UPGRADE_MODE" -eq 1 ]; then REMOVE_LEGACY_ENVIRONMENT=1; fi
+if [ "$UPGRADE_MODE" -eq 1 ]; then
+    REMOVE_LEGACY_ENVIRONMENT=1
+    # Reject incompatible candidates before scanning the legacy environment.
+    # This compatibility check is read-only, just like the mutation-plan guard.
+    echo ""
+    echo "Running candidate upgrade preflight..."
+    "$RUNTIME_BINARY" upgrade-preflight "$SCRIPT_DIR"
+fi
 # Check the complete system plan before even staging temporary installation
 # files, installing dependencies, creating user state, or changing services.
 preflight_installation
 
 if [ "$UPGRADE_MODE" -eq 1 ]; then
-    echo ""
-    echo "Running candidate upgrade preflight..."
-    "$RUNTIME_BINARY" upgrade-preflight "$SCRIPT_DIR"
     resolve_gui_binary
     resolve_app_icon
     load_upgrade_configuration

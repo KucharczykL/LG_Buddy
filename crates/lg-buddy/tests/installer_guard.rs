@@ -79,7 +79,12 @@ impl Fixture {
 case "${1:-}" in
     installer-preflight|config-binding|settings|--version)
         exec "$TEST_REAL_RUNTIME" "$@" ;;
-    upgrade-preflight) exit 0 ;;
+    upgrade-preflight)
+        if [ "${TEST_CANDIDATE_REFUSAL:-0}" = 1 ]; then
+            echo 'upgrade preflight: refused: invalid fixture candidate' >&2
+            exit 1
+        fi
+        exit 0 ;;
     ""|setup) : > "$TEST_HANDOFF" ;;
     *) exit 2 ;;
 esac
@@ -319,6 +324,37 @@ fn installer_refusals_leave_fresh_existing_and_upgrade_state_unchanged() {
             assert!(!f.directory.join("prerequisite-probe").exists(), "{text}");
         }
     }
+}
+
+#[test]
+fn incompatible_upgrade_refuses_before_scanning_legacy_files() {
+    let f = Fixture::new(true);
+    let legacy_file = f.root.join("usr/bin/LG_Buddy_PIP/lib/package.py");
+    write(&legacy_file, "preserve legacy environment", 0o600);
+    write(
+        &f.root.join("usr/lib/lg-buddy/config-path"),
+        &format!("{}\n", f.home.join(".config/lg-buddy/config.env").display()),
+        0o644,
+    );
+    let root_before = snapshot(&f.root);
+    let home_before = snapshot(&f.home);
+    let output = f
+        .sandbox(false)
+        .env("TEST_CANDIDATE_REFUSAL", "1")
+        .env("TEST_OWNED_PATH", &legacy_file)
+        .arg("/usr/bin/bash")
+        .arg(f.bundle.join("install.sh"))
+        .arg("--upgrade")
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{text}");
+    assert!(text.contains("invalid fixture candidate"), "{text}");
+    assert_eq!(snapshot(&f.root), root_before);
+    assert_eq!(snapshot(&f.home), home_before);
+    assert!(!f.directory.join("ownership-queries").exists());
+    assert!(!f.directory.join("service-action").exists());
+    assert!(!f.directory.join("prerequisite-probe").exists());
 }
 
 #[test]
