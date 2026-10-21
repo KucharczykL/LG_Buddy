@@ -13,6 +13,7 @@ use crate::update_install::{
     PreparedUpdateInstall, UpdateInstallCancellation, UpdateInstallError, UpdateInstallStage,
 };
 use crate::updates::UpdateChannel;
+use crate::upgrade_preflight::InstallationOwnership;
 
 #[derive(Debug, Clone)]
 pub enum UpdateInstallTask {
@@ -51,6 +52,7 @@ pub enum UpdateInstallOutcome {
     UpToDate,
     Installed(InstalledUpdate),
     Relaunched,
+    Restricted(InstallationOwnership),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,24 +128,27 @@ impl UpdateInstallBackend for EnvironmentUpdateInstallBackend {
         operation: &UpdateInstallOperation,
         progress: &mut dyn FnMut(UpdateInstallStage),
     ) -> Result<UpdateInstallOutcome, UpdateInstallFailure> {
-        match operation.task() {
+        let result = match operation.task() {
             UpdateInstallTask::Prepare { cancellation } => {
-                prepare_gui_update_with_cancellation(cancellation)
-                    .map(|prepared| {
-                        prepared.map_or(
-                            UpdateInstallOutcome::UpToDate,
-                            UpdateInstallOutcome::Prepared,
-                        )
-                    })
-                    .map_err(Into::into)
+                prepare_gui_update_with_cancellation(cancellation).map(|prepared| {
+                    prepared.map_or(
+                        UpdateInstallOutcome::UpToDate,
+                        UpdateInstallOutcome::Prepared,
+                    )
+                })
             }
             UpdateInstallTask::Install {
                 prepared,
                 cancellation,
             } => install_gui_update(prepared, cancellation, progress)
-                .map(UpdateInstallOutcome::Installed)
-                .map_err(Into::into),
-            UpdateInstallTask::Relaunch(_) => Err(UpdateInstallFailure::stopped()),
+                .map(UpdateInstallOutcome::Installed),
+            UpdateInstallTask::Relaunch(_) => return Err(UpdateInstallFailure::stopped()),
+        };
+        match result {
+            Err(UpdateInstallError::OwnershipRefused(ownership)) => {
+                Ok(UpdateInstallOutcome::Restricted(ownership))
+            }
+            result => result.map_err(Into::into),
         }
     }
 
@@ -200,7 +205,9 @@ impl UpdateInstallApplication {
         let offered = report.is_some_and(|report| report.update_available);
         self.presentation.check_channel_matches =
             offered.then(|| report.is_some_and(|report| Some(report.channel) == channel));
-        self.presentation.action = offered.then(|| {
+        let bundle = report
+            .is_some_and(|report| report.installation_ownership == InstallationOwnership::Bundle);
+        self.presentation.action = (offered && bundle).then(|| {
             SettingsAction::new(
                 if self.presentation.error.is_some() {
                     "Retry update"
@@ -366,6 +373,10 @@ impl UpdateInstallApplication {
             return Some((None, None));
         }
         match result {
+            Ok(UpdateInstallOutcome::Restricted(_)) => {
+                self.prepared = None;
+                self.clear_presentation();
+            }
             Ok(UpdateInstallOutcome::Prepared(prepared))
                 if matches!(operation.task(), UpdateInstallTask::Prepare { .. }) =>
             {
@@ -535,6 +546,7 @@ mod tests {
         app.complete_update_check(
             operation,
             Ok(UpdateCheckReport {
+                installation_ownership: crate::upgrade_preflight::InstallationOwnership::Bundle,
                 installed_version: "1.6.0".into(),
                 channel: UpdateChannel::Stable,
                 update_available: true,

@@ -169,6 +169,19 @@ are reused without changing their modes.
 
 ## Validation
 
+The updater uses the same fallible package database as installer preflight.
+Only an unowned executable in a recognized release-bundle layout can use
+`updates install`; APT-, DNF- and pacman-managed installations receive guidance
+to their package source, and unverifiable ownership refuses automatic installation.
+Ownership is checked before release discovery and again after acquisition,
+before candidate checks or installer execution. GUI update checks remain
+available and show this restriction instead of an install action.
+
+APT/DNF package installation from the integrated update journey is planned in
+issues #134/#135. Downloadable release packages alone do not configure an update
+repository; the current guidance does not promise `apt upgrade` or `dnf upgrade`
+will discover LG Buddy updates.
+
 Useful checks during development:
 
 ```bash

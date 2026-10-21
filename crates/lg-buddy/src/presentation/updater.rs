@@ -65,6 +65,13 @@ impl UpdaterPresentation {
                     SettingsAction::new("Install update…", action.enabled(), action.intent());
             }
         }
+        if !active {
+            if let Some(guidance) = check.result().and_then(|report| {
+                crate::update_install::bundle_update_guidance(report.installation_ownership)
+            }) {
+                row.description = format!("{} {}", row.description, guidance);
+            }
+        }
         row
     }
 
@@ -106,6 +113,7 @@ mod tests {
 
     fn report(channel: UpdateChannel, available: bool) -> UpdateCheckReport {
         UpdateCheckReport {
+            installation_ownership: crate::upgrade_preflight::InstallationOwnership::Bundle,
             installed_version: "1.6.0".into(),
             channel,
             update_available: available,
@@ -165,6 +173,101 @@ mod tests {
         assert_eq!(offer.description(), "Installed version: 1.6.0");
         assert_eq!(offer.action().label(), "Install update…");
         assert!(offer.action().enabled());
+    }
+
+    #[test]
+    fn managed_and_unknown_installs_explain_the_restriction_without_an_install_action() {
+        use crate::upgrade_preflight::{InstallationOwnership, PackageFamily};
+        for (ownership, guidance) in [
+            (
+                InstallationOwnership::Package {
+                    family: PackageFamily::Dpkg,
+                },
+                "APT",
+            ),
+            (
+                InstallationOwnership::Package {
+                    family: PackageFamily::Rpm,
+                },
+                "DNF",
+            ),
+            (
+                InstallationOwnership::Package {
+                    family: PackageFamily::Pacman,
+                },
+                "pacman",
+            ),
+            (InstallationOwnership::Unknown, "could not verify"),
+        ] {
+            for available in [false, true] {
+                let mut app = application("stable");
+                let mut result = report(UpdateChannel::Stable, available);
+                result.installation_ownership = ownership;
+                complete_check(&mut app, Ok(result));
+                let row = app.presentation().updater();
+                assert!(
+                    row.description().contains(guidance),
+                    "{}",
+                    row.description()
+                );
+                assert_eq!(row.action().intent(), SettingsIntent::CheckForUpdates);
+                assert!(row.action().enabled());
+                assert!(app
+                    .handle_intent(SettingsIntent::PrepareUpdateInstall)
+                    .is_none());
+                assert!(app.handle_intent(SettingsIntent::CheckForUpdates).is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn ownership_recheck_replaces_a_stale_offer_with_package_guidance() {
+        use crate::upgrade_preflight::{InstallationOwnership, PackageFamily};
+        let mut app = application("stable");
+        complete_check(&mut app, Ok(report(UpdateChannel::Stable, true)));
+        let preparation = app
+            .handle_intent(SettingsIntent::PrepareUpdateInstall)
+            .unwrap()
+            .update_install_operation()
+            .unwrap()
+            .clone();
+        app.complete_update_install(&preparation, Ok(UpdateInstallOutcome::Prepared(prepared())))
+            .unwrap();
+        let installation = app
+            .handle_intent(SettingsIntent::ConfirmUpdateInstall)
+            .unwrap()
+            .update_install_operation()
+            .unwrap()
+            .clone();
+        let transition = app
+            .complete_update_install(
+                &installation,
+                Ok(UpdateInstallOutcome::Restricted(
+                    InstallationOwnership::Package {
+                        family: PackageFamily::Rpm,
+                    },
+                )),
+            )
+            .unwrap();
+        assert!(transition.update_install_operation().is_none());
+        let row = app.presentation().updater();
+        assert!(row.description().contains("DNF"));
+        assert_eq!(row.action().intent(), SettingsIntent::CheckForUpdates);
+        assert!(row.action().enabled());
+        assert!(!app.is_mutating());
+        assert!(app
+            .handle_intent(SettingsIntent::ConfirmUpdateInstall)
+            .is_none());
+        assert!(app
+            .handle_intent(SettingsIntent::PrepareUpdateInstall)
+            .is_none());
+
+        // A fresh check may observe that the installation is a bundle again.
+        complete_check(&mut app, Ok(report(UpdateChannel::Stable, true)));
+        assert_eq!(
+            app.presentation().updater().action().intent(),
+            SettingsIntent::PrepareUpdateInstall
+        );
     }
 
     #[test]

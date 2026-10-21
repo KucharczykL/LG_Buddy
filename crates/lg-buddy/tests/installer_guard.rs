@@ -267,6 +267,74 @@ fn assert_installed_files_were_checked(fixture: &Fixture) {
 }
 
 #[test]
+fn updater_refusals_preserve_user_state_and_never_authorize_bundle_installation() {
+    for (family, mode, expected) in [
+        ("dpkg-query", "owned", "APT"),
+        ("rpm", "owned", "DNF"),
+        ("pacman", "owned", "pacman"),
+        ("dpkg-query", "conflicting", "could not verify"),
+        ("dpkg-query", "error", "could not verify"),
+    ] {
+        let fixture = Fixture::new(true);
+        write(
+            &fixture.root.join("usr/bin/lg-buddy"),
+            "installed runtime",
+            0o755,
+        );
+        write(
+            &fixture.directory.join("database"),
+            r#"#!/bin/sh
+for path do :; done
+printf '%s\n' "$path" >> "$TEST_QUERY_LOG"
+tool=${0##*/}
+if [ "$tool" = "$TEST_OWNER_FAMILY" ]; then
+    case "$TEST_DB_MODE" in
+        error) echo 'fixture database unavailable' >&2; exit 2 ;;
+        conflicting) printf 'one: %s\ntwo: %s\n' "$path" "$path"; exit 0 ;;
+        owned)
+            case "$tool" in
+                dpkg-query) printf 'lg-buddy: %s\n' "$path" ;;
+                *) printf 'lg-buddy\n' ;;
+            esac
+            exit 0 ;;
+    esac
+fi
+case "$tool" in
+    rpm) printf 'file %s is not owned by any package\n' "$path" ;;
+    pacman) printf 'error: No package owns %s\n' "$path" >&2 ;;
+esac
+exit 1
+"#,
+            0o755,
+        );
+        let root_before = snapshot(&fixture.root);
+        let home_before = snapshot(&fixture.home);
+        let output = fixture
+            .sandbox(false)
+            .env("TEST_OWNER_FAMILY", family)
+            .env("TEST_DB_MODE", mode)
+            .arg(env!("CARGO_BIN_EXE_lg-buddy"))
+            .args(["updates", "install"])
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{stderr}");
+        assert!(stderr.contains(expected), "{family}/{mode}: {stderr}");
+        assert!(output.stdout.is_empty(), "must refuse before confirmation");
+        assert_eq!(snapshot(&fixture.root), root_before);
+        assert_eq!(snapshot(&fixture.home), home_before);
+        assert!(!fixture.directory.join("service-action").exists());
+        assert!(!fixture.directory.join("prerequisite-probe").exists());
+        assert!(!fixture.directory.join("handoff").exists());
+        let queries = fs::read_to_string(fixture.directory.join("ownership-queries")).unwrap();
+        assert_eq!(queries.lines().count(), 3);
+        assert!(queries
+            .lines()
+            .all(|query| Path::new(query) == fixture.root.join("usr/bin/lg-buddy")));
+    }
+}
+
+#[test]
 fn installer_refusals_leave_fresh_existing_and_upgrade_state_unchanged() {
     for (configured, upgrade) in [(false, false), (true, false), (true, true)] {
         for (owned, mode, read_only, expected) in [

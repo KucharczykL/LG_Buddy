@@ -317,6 +317,7 @@ impl SettingsBackend for EnvironmentSettingsBackend {
         let outcome = crate::updates::check_for_updates()?;
         let result = outcome.result();
         Ok(UpdateCheckReport {
+            installation_ownership: crate::update_install::gui_update_ownership(),
             installed_version: result.current_version().to_string(),
             channel: result.check_channel(),
             update_available: result.update_available(),
@@ -768,7 +769,16 @@ impl SettingsApplication {
         }
         let up_to_date = matches!(result, Ok(UpdateInstallOutcome::UpToDate))
             && matches!(operation.task(), UpdateInstallTask::Prepare { .. });
+        let restriction = match &result {
+            Ok(UpdateInstallOutcome::Restricted(ownership)) => Some(*ownership),
+            _ => None,
+        };
         let (next, diagnostic) = self.update_install.complete(operation, result)?;
+        if let Some(ownership) = restriction {
+            self.presentation
+                .update_check_mut()
+                .set_installation_ownership(ownership);
+        }
         let notice = if up_to_date {
             self.presentation.update_check_mut().clear_result();
             Some(UpdateNotice::new("Already up to date", None))
@@ -1143,6 +1153,7 @@ mod tests {
 
     fn update_report(channel: crate::updates::UpdateChannel) -> UpdateCheckReport {
         UpdateCheckReport {
+            installation_ownership: crate::upgrade_preflight::InstallationOwnership::Bundle,
             installed_version: "1.6.0".into(),
             channel,
             update_available: true,

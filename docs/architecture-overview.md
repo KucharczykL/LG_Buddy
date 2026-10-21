@@ -511,6 +511,15 @@ latest release metadata, and last-notified release state used by the observable
 update notification policy; that cache is not user configuration and is not
 part of the settings API.
 
+CLI and GUI update installation share a package-ownership gate before release
+discovery and on the installed-state recheck after acquisition. The fallible
+package database classifies the installed runtime; only an unowned executable
+with a compatible bundle layout can enter the bundle installer. Package-owned
+installs name their package manager, while conflicting or unavailable ownership
+refuses without guessing. The GUI carries ownership in its update-check report
+and offers further checks with package guidance instead of an install action.
+Package-manager installation dispatch is deferred to the Debian/RPM work.
+
 The installer supplies the matching runtime and GTK executable together, checks
 GTK/libadwaita versions, and offers to install missing runtime packages before
 proceeding. The no-argument `lg-buddy` command locates `lg-buddy-gui` beside the
