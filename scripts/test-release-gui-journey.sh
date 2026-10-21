@@ -150,16 +150,23 @@ if { [ "${1:-}" = /usr/bin/systemctl ] || [ "${1:-}" = /run/current-system/sw/bi
     shift
     exec "$LG_BUDDY_SYSTEMCTL" "$@"
 fi
-# UID 0 in this namespace is the invoking user, but passwd still names the
-# host root's home. Give getpwuid-based tools (Ubuntu RPM uses ~/.rpmdb) the
-# invoking user's home too, so authorization keeps the same database view.
-caller_home="$(getent passwd "$(id -u)" | cut -d: -f6)"
-root_home="$(getent passwd 0 | cut -d: -f6)"
-exec unshare -Urm sh -c '
-    mount --bind "$1" "$2"
-    shift 2
-    exec "$@"
-' sh "$caller_home" "$root_home" "$@"
+# Ubuntu RPM uses ~/.rpmdb: namespace UID 0 must see the invoking user's
+# home too. System-wide databases (Fedora/Arch) need no mount namespace.
+if [ -x /usr/bin/rpm ]; then
+    caller_home="$(getent passwd "$(id -u)" | cut -d: -f6)"
+    rpm_db="$(env -u HOME -u XDG_CONFIG_HOME -u RPM_CONFIGDIR /usr/bin/rpm --eval '%_dbpath')"
+    case "$rpm_db" in
+        "$caller_home"/*)
+            root_home="$(getent passwd 0 | cut -d: -f6)"
+            exec unshare -Urm sh -c '
+                mount --bind "$1" "$2"
+                shift 2
+                exec "$@"
+            ' sh "$caller_home" "$root_home" "$@"
+            ;;
+    esac
+fi
+exec unshare -Ur "$@"
 SH
     cat > "$WORK_DIR/journey-bin/journalctl" <<'SH'
 #!/bin/sh
