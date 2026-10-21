@@ -770,7 +770,7 @@ impl SettingsApplication {
         let up_to_date = matches!(result, Ok(UpdateInstallOutcome::UpToDate))
             && matches!(operation.task(), UpdateInstallTask::Prepare { .. });
         let restriction = match &result {
-            Ok(UpdateInstallOutcome::Restricted(ownership)) => Some(*ownership),
+            Ok(UpdateInstallOutcome::Restricted { ownership, .. }) => Some(*ownership),
             _ => None,
         };
         let (next, diagnostic) = self.update_install.complete(operation, result)?;

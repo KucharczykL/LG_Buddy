@@ -242,11 +242,12 @@ mod tests {
         let transition = app
             .complete_update_install(
                 &installation,
-                Ok(UpdateInstallOutcome::Restricted(
-                    InstallationOwnership::Package {
+                Ok(UpdateInstallOutcome::Restricted {
+                    ownership: InstallationOwnership::Package {
                         family: PackageFamily::Rpm,
                     },
-                )),
+                    failure: None,
+                }),
             )
             .unwrap();
         assert!(transition.update_install_operation().is_none());

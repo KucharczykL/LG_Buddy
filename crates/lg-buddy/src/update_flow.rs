@@ -52,7 +52,10 @@ pub enum UpdateInstallOutcome {
     UpToDate,
     Installed(InstalledUpdate),
     Relaunched,
-    Restricted(InstallationOwnership),
+    Restricted {
+        ownership: InstallationOwnership,
+        failure: Option<UpdateInstallFailure>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,12 +147,7 @@ impl UpdateInstallBackend for EnvironmentUpdateInstallBackend {
                 .map(UpdateInstallOutcome::Installed),
             UpdateInstallTask::Relaunch(_) => return Err(UpdateInstallFailure::stopped()),
         };
-        match result {
-            Err(UpdateInstallError::OwnershipRefused(ownership)) => {
-                Ok(UpdateInstallOutcome::Restricted(ownership))
-            }
-            result => result.map_err(Into::into),
-        }
+        update_install_outcome(result)
     }
 
     fn relaunch(&self, installed: &InstalledUpdate) -> Result<(), UpdateInstallFailure> {
@@ -161,6 +159,28 @@ impl UpdateInstallBackend for EnvironmentUpdateInstallBackend {
             diagnostic: format!("could not replace the running GUI with the installed GUI: {error}"),
             cancelled: false,
         })
+    }
+}
+
+fn update_install_outcome(
+    result: Result<UpdateInstallOutcome, UpdateInstallError>,
+) -> Result<UpdateInstallOutcome, UpdateInstallFailure> {
+    match result {
+        Err(UpdateInstallError::OwnershipRefused(ownership)) => {
+            Ok(UpdateInstallOutcome::Restricted {
+                ownership,
+                failure: None,
+            })
+        }
+        // An unowned executable with an incompatible layout is Unknown, just
+        // as in gui_update_ownership. Keep its repair advice and diagnostics.
+        Err(error @ UpdateInstallError::InitialPreflight(_)) => {
+            Ok(UpdateInstallOutcome::Restricted {
+                ownership: InstallationOwnership::Unknown,
+                failure: Some(error.into()),
+            })
+        }
+        result => result.map_err(Into::into),
     }
 }
 
@@ -373,9 +393,12 @@ impl UpdateInstallApplication {
             return Some((None, None));
         }
         match result {
-            Ok(UpdateInstallOutcome::Restricted(_)) => {
+            Ok(UpdateInstallOutcome::Restricted { failure, .. }) => {
                 self.prepared = None;
                 self.clear_presentation();
+                if let Some(failure) = failure {
+                    return self.failed(failure);
+                }
             }
             Ok(UpdateInstallOutcome::Prepared(prepared))
                 if matches!(operation.task(), UpdateInstallTask::Prepare { .. }) =>
@@ -563,6 +586,71 @@ mod tests {
             .update_install_operation()
             .unwrap()
             .clone()
+    }
+
+    #[test]
+    fn incompatible_bundle_layout_replaces_stale_offers_and_keeps_repair_details() {
+        use crate::upgrade_preflight::{CompatibilityFailure, CompatibilityReport};
+        for after_confirmation in [false, true] {
+            let mut app = offered();
+            let mut operation = prepare(&mut app);
+            if after_confirmation {
+                app.complete_update_install(
+                    &operation,
+                    Ok(UpdateInstallOutcome::Prepared(prepared())),
+                )
+                .unwrap();
+                operation = app
+                    .handle_intent(SettingsIntent::ConfirmUpdateInstall)
+                    .unwrap()
+                    .update_install_operation()
+                    .unwrap()
+                    .clone();
+            }
+            let report = CompatibilityReport::from_failures(vec![CompatibilityFailure {
+                check: "installed-layout",
+                path: Some("/etc/systemd/system/LG_Buddy.service".into()),
+                detail: "path is missing".into(),
+                remedy: "repair the release-bundle installation".into(),
+            }]);
+            // Use the production backend conversion, rather than injecting an
+            // already-restricted outcome which would miss the reported bug.
+            let result = update_install_outcome(Err(UpdateInstallError::InitialPreflight(report)));
+            let transition = app.complete_update_install(&operation, result).unwrap();
+
+            assert!(transition.update_install_operation().is_none());
+            let presentation = app.presentation();
+            assert_eq!(
+                presentation
+                    .update_check()
+                    .result()
+                    .unwrap()
+                    .installation_ownership,
+                InstallationOwnership::Unknown
+            );
+            let row = presentation.updater();
+            assert!(row.description().contains("could not verify"));
+            assert_eq!(row.action().intent(), SettingsIntent::CheckForUpdates);
+            assert!(row.action().enabled());
+            let failure = presentation.update_install().error().unwrap();
+            assert!(failure
+                .detail()
+                .contains("repair the release-bundle installation"));
+            assert!(presentation
+                .update_install()
+                .failure_details()
+                .unwrap()
+                .contains("/etc/systemd/system/LG_Buddy.service"));
+            assert!(transition.update_notice().is_some());
+            assert!(!app.is_mutating());
+            assert!(app
+                .handle_intent(SettingsIntent::PrepareUpdateInstall)
+                .is_none());
+            assert!(app
+                .handle_intent(SettingsIntent::ConfirmUpdateInstall)
+                .is_none());
+            assert!(app.handle_intent(SettingsIntent::CheckForUpdates).is_some());
+        }
     }
 
     #[test]
