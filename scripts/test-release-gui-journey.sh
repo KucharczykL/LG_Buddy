@@ -150,7 +150,16 @@ if { [ "${1:-}" = /usr/bin/systemctl ] || [ "${1:-}" = /run/current-system/sw/bi
     shift
     exec "$LG_BUDDY_SYSTEMCTL" "$@"
 fi
-exec unshare -Ur "$@"
+# UID 0 in this namespace is the invoking user, but passwd still names the
+# host root's home. Give getpwuid-based tools (Ubuntu RPM uses ~/.rpmdb) the
+# invoking user's home too, so authorization keeps the same database view.
+caller_home="$(getent passwd "$(id -u)" | cut -d: -f6)"
+root_home="$(getent passwd 0 | cut -d: -f6)"
+exec unshare -Urm sh -c '
+    mount --bind "$1" "$2"
+    shift 2
+    exec "$@"
+' sh "$caller_home" "$root_home" "$@"
 SH
     cat > "$WORK_DIR/journey-bin/journalctl" <<'SH'
 #!/bin/sh
