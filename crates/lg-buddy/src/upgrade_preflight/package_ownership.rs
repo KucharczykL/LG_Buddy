@@ -48,6 +48,15 @@ pub enum PackageFamily {
 }
 
 impl PackageFamily {
+    /// The package manager used in update guidance, independently of delivery.
+    pub fn package_manager(self) -> &'static str {
+        match self {
+            Self::Dpkg => "APT",
+            Self::Rpm => "DNF",
+            Self::Pacman => "pacman",
+        }
+    }
+
     /// Stable, family-specific identity string. Consumed by the future
     /// package-version serialization (#306); not a full version encoding
     /// here.

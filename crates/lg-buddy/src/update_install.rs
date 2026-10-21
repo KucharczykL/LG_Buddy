@@ -17,7 +17,10 @@ use crate::release_bundle::{
 use crate::updates::{
     discover_install_candidate_for_channel, ReleaseInfo, UpdateChannel, UpdatesError,
 };
-use crate::upgrade_preflight::{current_host_preflight, CompatibilityAdvice, CompatibilityReport};
+use crate::upgrade_preflight::{
+    current_host_preflight, installation_ownership, CompatibilityAdvice, CompatibilityReport,
+    InstallationOwnership, PackageDatabase, PackageDatabaseError, PathOwnership,
+};
 use crate::version::VersionInfo;
 
 const GUI_TARGET: &str = "x86_64-unknown-linux-gnu";
@@ -31,6 +34,7 @@ pub enum UpdateInstallError {
         source: semver::Error,
     },
     InitialPreflight(CompatibilityReport),
+    OwnershipRefused(InstallationOwnership),
     DowngradeRefused {
         current: Version,
         candidate: Version,
@@ -81,6 +85,9 @@ impl fmt::Display for UpdateInstallError {
                 write!(formatter, "installed version `{version}` is invalid: {source}")
             }
             Self::InitialPreflight(report) => formatter.write_str(&report.render()),
+            Self::OwnershipRefused(ownership) => formatter.write_str(
+                &bundle_update_guidance(*ownership).unwrap_or_default(),
+            ),
             Self::DowngradeRefused { current, candidate } => write!(
                 formatter,
                 "refusing to downgrade LG Buddy from {current} to {candidate}"
@@ -181,6 +188,7 @@ impl Error for UpdateInstallError {
             | Self::InstallerLaunch(error) => Some(error),
             Self::InstalledIdentity(error) => Some(error),
             Self::InitialPreflight(_)
+            | Self::OwnershipRefused(_)
             | Self::DowngradeRefused { .. }
             | Self::Cancelled
             | Self::AuthorizationDeclined
@@ -202,6 +210,9 @@ impl UpdateInstallError {
     /// output. The `Display` implementation remains the diagnostic detail.
     pub fn user_message(&self) -> String {
         match self {
+            Self::OwnershipRefused(ownership) => {
+                bundle_update_guidance(*ownership).unwrap_or_default()
+            }
             Self::InitialPreflight(report) => {
                 let details = report
                     .failures()
@@ -546,6 +557,61 @@ struct SystemUpdateInstallRuntime {
     require_gui: bool,
 }
 
+pub(crate) fn bundle_update_guidance(ownership: InstallationOwnership) -> Option<String> {
+    match ownership {
+        InstallationOwnership::Bundle => None,
+        InstallationOwnership::Package { family } => Some(format!(
+            "This installation is managed by {}. Use that package manager to install a suitable verified package from your package source or maintainer. LG Buddy cannot install package updates in this version.",
+            family.package_manager(),
+        )),
+        InstallationOwnership::Unknown => Some(
+            "LG Buddy could not verify how this installation is managed. Automatic installation is unavailable. Check the installation and its package source before updating.".into(),
+        ),
+    }
+}
+
+fn check_update_installation(
+    executable: Result<PathOwnership, PackageDatabaseError>,
+    bundle_preflight: impl FnOnce() -> CompatibilityReport,
+) -> Result<(), UpdateInstallError> {
+    // Package/failed probes must get ownership guidance even when their layout
+    // does not resemble a bundle. Only an unowned executable needs layout checks.
+    let report = if matches!(executable, Ok(PathOwnership::Unowned)) {
+        bundle_preflight()
+    } else {
+        CompatibilityReport::default()
+    };
+    let ownership = installation_ownership(executable, report.compatible());
+    if !report.compatible() {
+        return Err(UpdateInstallError::InitialPreflight(report));
+    }
+    match ownership {
+        InstallationOwnership::Bundle => Ok(()),
+        ownership => Err(UpdateInstallError::OwnershipRefused(ownership)),
+    }
+}
+
+fn system_update_preflight(require_gui: bool) -> Result<(), UpdateInstallError> {
+    check_update_installation(
+        PackageDatabase::system().owner_of(&installed_binary_path()),
+        || {
+            if require_gui {
+                crate::upgrade_preflight::current_gui_host_preflight()
+            } else {
+                current_host_preflight()
+            }
+        },
+    )
+}
+
+pub(crate) fn gui_update_ownership() -> InstallationOwnership {
+    match system_update_preflight(true) {
+        Ok(()) => InstallationOwnership::Bundle,
+        Err(UpdateInstallError::OwnershipRefused(ownership)) => ownership,
+        Err(_) => InstallationOwnership::Unknown,
+    }
+}
+
 impl UpdateInstallRuntime for SystemUpdateInstallRuntime {
     type Bundle = VerifiedReleaseBundle;
 
@@ -558,16 +624,7 @@ impl UpdateInstallRuntime for SystemUpdateInstallRuntime {
     }
 
     fn initial_preflight(&mut self) -> Result<(), UpdateInstallError> {
-        let report = if self.require_gui {
-            crate::upgrade_preflight::current_gui_host_preflight()
-        } else {
-            current_host_preflight()
-        };
-        if report.compatible() {
-            Ok(())
-        } else {
-            Err(UpdateInstallError::InitialPreflight(report))
-        }
+        system_update_preflight(self.require_gui)
     }
 
     fn discover_candidate(
@@ -1123,15 +1180,18 @@ fn run_update_install_with<W: Write, R: UpdateInstallRuntime>(
 #[cfg(test)]
 mod tests {
     use super::{
-        candidate_preflight_command, classify_gui_installer_output, confirmation_is_yes,
-        install_prepared_update_with, installed_binary_path_for_root, installer_command,
-        prepare_gui_update_with, prepare_update_install_with, run_bounded_command,
-        run_update_install_with, BundleView, CompatibilityReport, InstalledUpdate,
-        UpdateInstallCancellation, UpdateInstallError, UpdateInstallRuntime, UpdateInstallStage,
-        GUI_TARGET,
+        candidate_preflight_command, check_update_installation, classify_gui_installer_output,
+        confirmation_is_yes, install_prepared_update_with, installed_binary_path_for_root,
+        installer_command, prepare_gui_update_with, prepare_update_install_with,
+        run_bounded_command, run_update_install_with, BundleView, CompatibilityReport,
+        InstalledUpdate, UpdateInstallCancellation, UpdateInstallError, UpdateInstallRuntime,
+        UpdateInstallStage, GUI_TARGET,
     };
     use crate::release_bundle::{BundleAcquisitionError, ReleaseIdentity};
     use crate::updates::{ReleaseInfo, UpdateChannel};
+    use crate::upgrade_preflight::{
+        PackageDatabaseError, PackageFamily, PackageOwner, PathOwnership,
+    };
     use crate::version::{ReleaseChannel, VersionInfo};
     use semver::Version;
     use std::cell::RefCell;
@@ -1181,6 +1241,7 @@ mod tests {
         resolved_identity: ReleaseIdentity,
         acquired_identity: ReleaseIdentity,
         installed_identity: ReleaseIdentity,
+        executable_ownership: Result<PathOwnership, PackageDatabaseError>,
     }
 
     impl FakeRuntime {
@@ -1199,6 +1260,7 @@ mod tests {
                 resolved_identity: identity.clone(),
                 acquired_identity: identity.clone(),
                 installed_identity: identity,
+                executable_ownership: Ok(PathOwnership::Unowned),
             }
         }
 
@@ -1225,6 +1287,10 @@ mod tests {
 
         fn initial_preflight(&mut self) -> Result<(), UpdateInstallError> {
             self.events.borrow_mut().push("initial_preflight");
+            check_update_installation(
+                self.executable_ownership.clone(),
+                CompatibilityReport::default,
+            )?;
             if self.failure == Some(Failure::Initial) {
                 Err(UpdateInstallError::ConfirmationRequiresTerminal)
             } else {
@@ -1286,6 +1352,10 @@ mod tests {
         fn recheck_installed_state(&mut self) -> Result<(), UpdateInstallError> {
             if self.recheck {
                 self.events.borrow_mut().push("recheck");
+                check_update_installation(
+                    self.executable_ownership.clone(),
+                    CompatibilityReport::default,
+                )?;
                 if self.failure == Some(Failure::Recheck) {
                     return Err(UpdateInstallError::InitialPreflight(
                         CompatibilityReport::default(),
@@ -1662,6 +1732,98 @@ mod tests {
 
         assert!(matches!(error, UpdateInstallError::InitialPreflight(_)));
         assert_eq!(runtime.event_names(), ["acquire", "recheck", "drop_bundle"]);
+    }
+
+    fn non_bundle_owners() -> Vec<(
+        Result<PathOwnership, PackageDatabaseError>,
+        Option<&'static str>,
+    )> {
+        let owner = |family| PackageOwner {
+            family,
+            name: "lg-buddy".into(),
+            version: None,
+        };
+        vec![
+            (
+                Ok(PathOwnership::Owned(owner(PackageFamily::Dpkg))),
+                Some("APT"),
+            ),
+            (
+                Ok(PathOwnership::Owned(owner(PackageFamily::Rpm))),
+                Some("DNF"),
+            ),
+            (
+                Ok(PathOwnership::Owned(owner(PackageFamily::Pacman))),
+                Some("pacman"),
+            ),
+            (
+                Ok(PathOwnership::Conflicting(vec![
+                    owner(PackageFamily::Dpkg),
+                    owner(PackageFamily::Rpm),
+                ])),
+                None,
+            ),
+            (
+                Err(PackageDatabaseError::ProbeFailed(
+                    "database unavailable".into(),
+                )),
+                None,
+            ),
+        ]
+    }
+
+    #[test]
+    fn non_bundle_updates_stop_before_discovery_confirmation_or_acquisition() {
+        for (ownership, manager) in non_bundle_owners() {
+            let mut runtime = FakeRuntime::new("1.5.0");
+            runtime.executable_ownership = ownership.clone();
+            let error = run_update_install_with(&mut Vec::new(), &mut runtime).unwrap_err();
+            assert!(matches!(error, UpdateInstallError::OwnershipRefused(_)));
+            let message = error.user_message();
+            if let Some(manager) = manager {
+                assert!(message.contains(manager), "{message}");
+            } else {
+                assert!(message.contains("could not verify"), "{message}");
+                assert!(!message.contains("APT") && !message.contains("DNF"));
+            }
+            assert_eq!(runtime.event_names(), ["current", "initial_preflight"]);
+
+            // Graphical preparation uses the same gate before offering confirmation.
+            runtime.events.borrow_mut().clear();
+            let current = runtime.current_version();
+            assert!(matches!(
+                prepare_gui_update_with(&mut runtime, &UpdateInstallCancellation::new(), current),
+                Err(UpdateInstallError::OwnershipRefused(_))
+            ));
+            assert_eq!(runtime.event_names(), ["current", "initial_preflight"]);
+
+            // Package layouts need not satisfy the bundle's /etc unit contract.
+            assert!(check_update_installation(ownership, || panic!(
+                "must not inspect bundle layout"
+            ))
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn ownership_changes_after_confirmation_never_run_the_bundle_installer() {
+        for (ownership, _) in non_bundle_owners() {
+            let mut runtime = FakeRuntime::new("1.5.0");
+            let cancellation = UpdateInstallCancellation::new();
+            let current = runtime.current_version();
+            let prepared = prepare_update_install_with(&mut runtime, &cancellation, current)
+                .unwrap()
+                .unwrap();
+            runtime.events.borrow_mut().clear();
+            runtime.recheck = true;
+            runtime.executable_ownership = ownership;
+            let error =
+                install_prepared_update_with(&prepared, &mut runtime, &cancellation, &mut |_| {})
+                    .unwrap_err();
+            assert!(matches!(error, UpdateInstallError::OwnershipRefused(_)));
+            assert_eq!(runtime.event_names(), ["acquire", "recheck", "drop_bundle"]);
+            assert!(cancellation.can_cancel());
+        }
     }
 
     #[test]

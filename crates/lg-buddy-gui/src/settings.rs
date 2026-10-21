@@ -1518,6 +1518,7 @@ fn updater_renderer_scenarios(application: &adw::Application) {
         .complete_update_check(
             checking.update_check_operation().unwrap(),
             Ok(UpdateCheckReport {
+                installation_ownership: lg_buddy::upgrade_preflight::InstallationOwnership::Bundle,
                 installed_version: "1.6.0".into(),
                 channel: UpdateChannel::Stable,
                 update_available: false,
@@ -1537,12 +1538,41 @@ fn updater_renderer_scenarios(application: &adw::Application) {
     let checking = model
         .handle_intent(SettingsIntent::CheckForUpdates)
         .unwrap();
+    model
+        .complete_update_check(
+            checking.update_check_operation().unwrap(),
+            Ok(UpdateCheckReport {
+                installation_ownership:
+                    lg_buddy::upgrade_preflight::InstallationOwnership::Package {
+                        family: lg_buddy::upgrade_preflight::PackageFamily::Dpkg,
+                    },
+                installed_version: "1.6.0".into(),
+                channel: UpdateChannel::Stable,
+                update_available: true,
+                warning: None,
+            }),
+        )
+        .unwrap();
+    view.render(model.presentation());
+    assert_eq!(row.title(), "Update available");
+    assert!(row.subtitle().unwrap().contains("APT"));
+    assert_eq!(action.label().as_deref(), Some("Check for updates"));
+    assert!(action.is_sensitive());
+    assert!(!view.updater.presented.get());
+    assert!(model
+        .handle_intent(SettingsIntent::PrepareUpdateInstall)
+        .is_none());
+
+    let checking = model
+        .handle_intent(SettingsIntent::CheckForUpdates)
+        .unwrap();
     view.render(checking.presentation());
     assert!(view.updater.notice.borrow().is_none());
     model
         .complete_update_check(
             checking.update_check_operation().unwrap(),
             Ok(UpdateCheckReport {
+                installation_ownership: lg_buddy::upgrade_preflight::InstallationOwnership::Bundle,
                 installed_version: "1.6.0".into(),
                 channel: UpdateChannel::Stable,
                 update_available: true,
@@ -1583,6 +1613,7 @@ fn updater_renderer_scenarios(application: &adw::Application) {
         .complete_update_check(
             checking.update_check_operation().unwrap(),
             Ok(UpdateCheckReport {
+                installation_ownership: lg_buddy::upgrade_preflight::InstallationOwnership::Bundle,
                 installed_version: "1.6.0".into(),
                 channel: UpdateChannel::Stable,
                 update_available: true,
