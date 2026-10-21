@@ -395,7 +395,10 @@ fi
 grep -F -q 'upgrade preflight: refused' "$REFUSAL_OUTPUT"
 grep -F -q "$SYSTEM_SERVICE" "$REFUSAL_OUTPUT"
 [ ! -e "$SUDO_MARKER" ] || fail "Initial preflight refusal invoked sudo."
-if grep -E -q 'AF_INET|AF_INET6' "$NETWORK_TRACE"; then
+# libalpm probes IPv6 support by opening an unused socket during ownership
+# queries. Socket creation alone sends nothing; addressed network calls still
+# fail this control, including connect/sendto/sendmsg.
+if awk '/AF_INET/ && !/socket\(AF_INET6?,/ { attempted = 1 } END { exit !attempted }' "$NETWORK_TRACE"; then
     fail "Initial preflight refusal attempted network access."
 fi
 REFUSAL_TREE_AFTER="$(tree_digest "$INSTALL_ROOT" "$HOME_DIR")"
@@ -419,7 +422,7 @@ fi
 grep -F -q 'upgrade preflight: refused' "$CANDIDATE_REFUSAL_OUTPUT"
 grep -F -q "$CANDIDATE_SERVICE" "$CANDIDATE_REFUSAL_OUTPUT"
 [ ! -e "$SUDO_MARKER" ] || fail "Candidate preflight refusal invoked sudo."
-if grep -E -q 'AF_INET|AF_INET6' "$CANDIDATE_NETWORK_TRACE"; then
+if awk '/AF_INET/ && !/socket\(AF_INET6?,/ { attempted = 1 } END { exit !attempted }' "$CANDIDATE_NETWORK_TRACE"; then
     fail "Candidate preflight refusal attempted network access."
 fi
 CANDIDATE_REFUSAL_TREE_AFTER="$(tree_digest "$INSTALL_ROOT" "$HOME_DIR")"

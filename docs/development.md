@@ -150,6 +150,23 @@ To install from a release bundle instead, extract the archive and run:
 ./install.sh
 ```
 
+Before changing anything, the bundle installer checks its complete system write
+and removal plan with the candidate runtime's private `installer-preflight`
+command. It queries each destination through the shared package database and
+uses filesystem mount facts to reject read-only targets. Owned or conflicting
+paths and unavailable ownership information all refuse installation with a
+path-specific error. Recursive cleanup and copied KWin payload members are
+included, even when the destination does not exist yet.
+Legacy service enablement and alias links are collected before preflight and
+only those checked links are removed during cleanup.
+
+This check runs before dependency installation, temporary installation files,
+user config/selection writes, or service changes. The authorized graphical
+upgrade helper repeats it before system mutations. A preflight refusal leaves
+the installation and user state unchanged; a later I/O failure still follows
+the existing partial-upgrade recovery contract. Existing shared directories
+are reused without changing their modes.
+
 ## Validation
 
 Useful checks during development:

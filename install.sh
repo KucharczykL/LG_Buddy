@@ -246,6 +246,97 @@ initialize_install_paths() {
 
 initialize_install_paths
 
+# Collect the exact legacy links we will unlink. Unlike systemctl disable, this
+# cannot expand the mutation set later through aliases or an Also= directive.
+collect_legacy_service_links() {
+    LEGACY_SERVICE_LINKS=()
+    [ -d "$SYSTEMD_SYSTEM_DIR" ] || return 0
+    local -a remaining=()
+    local -A retired=([LG_Buddy_wake.service]=1 [LG_Buddy_sleep.service]=1)
+    local index link target changed=1
+    mapfile -d '' -t remaining < <(find -P "$SYSTEMD_SYSTEM_DIR" -type l -print0)
+    wait "$!" || return 1
+    # Include aliases, then links to those aliases, without following directory
+    # symlinks or losing spaces/newlines in paths.
+    while [ "$changed" -eq 1 ]; do
+        changed=0
+        for index in "${!remaining[@]}"; do
+            link="${remaining[$index]}"
+            target="$(readlink -- "$link")" || return 1
+            if [ "${retired[${target##*/}]:-0}" -eq 1 ]; then
+                LEGACY_SERVICE_LINKS+=("$link")
+                retired[${link##*/}]=1
+                unset 'remaining[index]'
+                changed=1
+            fi
+        done
+    done
+}
+
+# The same resolved paths drive both preflight and mutation. Existing shared
+# directories are reused by mkdir -p; only missing directories are created.
+preflight_installation() {
+    local -a plan=(
+        file "$(prefix_path /etc/lg-buddy/config-path)"
+        file "$RUNTIME_INSTALL_PATH"
+        file "$GUI_INSTALL_PATH"
+        file "$DESKTOP_ENTRY_PATH"
+        remove "$LEGACY_DESKTOP_ENTRY_PATH"
+        file "$APP_ICON_PATH"
+    )
+    local name setup_source="$SCRIPT_DIR/data/setup-services.sh"
+    LEGACY_SERVICE_LINKS=()
+    if [ "$REMOVE_LEGACY_ENVIRONMENT" -eq 1 ]; then
+        plan+=(tree "$VENV_DIR")
+    fi
+    if [ "$UPGRADE_MODE" -eq 0 ]; then
+        for name in LG_Buddy_Startup LG_Buddy_Shutdown LG_Buddy_Screen_On LG_Buddy_Screen_Off \
+            LG_Buddy_Screen_Monitor LG_Buddy_sleep_pre LG_Buddy_Brightness; do
+            plan+=(remove "$SYSTEM_BIN_DIR/$name")
+        done
+        plan+=(remove "$COMMON_HELPER_PATH")
+    fi
+    if [ ! -f "$setup_source" ]; then setup_source="$SCRIPT_DIR/docs/setup-services.sh"; fi
+    if [ -f "$setup_source" ]; then
+        plan+=(file "$SYSTEM_LIB_DIR/setup-services"
+            file "$(prefix_path /usr/share/polkit-1/actions)/io.github.staphylococcus.LGBuddy.setup.policy")
+        for name in LG_Buddy.service LG_Buddy_lifecycle.service lg_buddy.conf; do
+            plan+=(file "$SYSTEM_LIB_DIR/setup/systemd/$name")
+        done
+    fi
+    if [ -d "$KWIN_PAYLOAD_DIR" ]; then
+        plan+=(tree "$KWIN_INSTALL_DIR" copy-tree "$KWIN_PAYLOAD_DIR" "$KWIN_INSTALL_DIR")
+    fi
+    if [ "$UPGRADE_MODE" -eq 1 ] || { [ "$HEADLESS" -eq 0 ] && [ "$FRESH_SETUP_MODE" -eq 0 ]; }; then
+        plan+=(
+            file "$SYSTEMD_SERVICE_PATH"
+            file "$TMPFILES_CONF_PATH"
+            file "$SYSTEMD_SERVICE_OVERRIDE_DIR/config.conf"
+            file "$SYSTEMD_LIFECYCLE_SERVICE_PATH"
+            file "$SYSTEMD_LIFECYCLE_OVERRIDE_DIR/config.conf"
+            file "$NM_LIFECYCLE_HOOK_PATH"
+        )
+        if [ "$SKIP_SYSTEMD_ACTIONS" != 1 ]; then
+            plan+=(directory "$(prefix_path /run/lg_buddy)"
+                link "$SYSTEMD_SYSTEM_DIR/multi-user.target.wants/LG_Buddy.service"
+                link "$SYSTEMD_SYSTEM_DIR/multi-user.target.wants/LG_Buddy_lifecycle.service")
+        fi
+        if [ "$UPGRADE_MODE" -eq 0 ]; then
+            if [ "$SKIP_SYSTEMD_ACTIONS" != 1 ]; then
+                collect_legacy_service_links
+                for name in "${LEGACY_SERVICE_LINKS[@]}"; do
+                    plan+=(remove "$name")
+                done
+            fi
+            plan+=(remove "$SYSTEMD_WAKE_SERVICE_PATH" remove "$SYSTEMD_SLEEP_SERVICE_PATH"
+                remove "$SYSTEMD_WAKE_OVERRIDE_DIR/config.conf" remove "$SYSTEMD_SLEEP_OVERRIDE_DIR/config.conf"
+                rmdir "$SYSTEMD_WAKE_OVERRIDE_DIR" rmdir "$SYSTEMD_SLEEP_OVERRIDE_DIR"
+                remove "$NM_SLEEP_HOOK_PATH" remove "$SYSTEM_SLEEP_HOOK_PATH")
+        fi
+    fi
+    "$RUNTIME_BINARY" installer-preflight "${INSTALL_ROOT:-/}" "${plan[@]}"
+}
+
 if [ ! -r "$SCRIPT_DIR/bin/LG_Buddy_Common" ]; then
     echo "LG Buddy common helper is not readable: $SCRIPT_DIR/bin/LG_Buddy_Common"
     exit 1
@@ -438,8 +529,9 @@ cleanup_legacy_sleep_wake_handlers() {
     if [ "$SKIP_SYSTEMD_ACTIONS" = "1" ]; then
         echo "Skipping legacy sleep/wake systemctl cleanup because LG_BUDDY_SKIP_SYSTEMD_ACTIONS=1."
     else
-        run_privileged systemctl disable LG_Buddy_wake.service 2>/dev/null || true
-        run_privileged systemctl disable LG_Buddy_sleep.service 2>/dev/null || true
+        if [ "${#LEGACY_SERVICE_LINKS[@]}" -gt 0 ]; then
+            run_privileged rm -f -- "${LEGACY_SERVICE_LINKS[@]}"
+        fi
         run_privileged systemctl stop LG_Buddy_wake.service 2>/dev/null || true
         run_privileged systemctl stop LG_Buddy_sleep.service 2>/dev/null || true
     fi
@@ -494,7 +586,7 @@ perform_privileged_runtime_installation() {
     MUTATION_STARTED=1
     system_upgrade_message "Installing Rust runtime and support files..."
     if [ "$UPGRADE_MODE" -eq 0 ]; then
-        run_system_mutation_command install -d "$SYSTEM_BIN_DIR"
+        run_system_mutation_command mkdir -p "$SYSTEM_BIN_DIR"
     fi
     run_system_mutation_command install -m 755 "$RUNTIME_BINARY" "$RUNTIME_INSTALL_PATH"
     run_system_mutation_command install -m 755 "$GUI_BINARY" "$GUI_INSTALL_PATH"
@@ -507,7 +599,6 @@ perform_privileged_runtime_installation() {
         run_system_mutation_command rm -f "${SYSTEM_BIN_DIR}/LG_Buddy_sleep_pre"
         run_system_mutation_command rm -f "${SYSTEM_BIN_DIR}/LG_Buddy_Brightness"
         run_system_mutation_command rm -f "$COMMON_HELPER_PATH"
-        run_system_mutation_command rmdir "$SYSTEM_LIB_DIR" 2>/dev/null || true
     fi
     local setup_source="$SCRIPT_DIR/data/setup-services.sh"
     local setup_policy="$SCRIPT_DIR/data/io.github.staphylococcus.LGBuddy.setup.policy"
@@ -516,7 +607,7 @@ perform_privileged_runtime_installation() {
         setup_policy="$SCRIPT_DIR/docs/io.github.staphylococcus.LGBuddy.setup.policy"
     fi
     if [ -f "$setup_source" ]; then
-        run_system_mutation_command install -d "$SYSTEM_LIB_DIR/setup/systemd" "$(prefix_path /usr/share/polkit-1/actions)"
+        run_system_mutation_command mkdir -p "$SYSTEM_LIB_DIR/setup/systemd" "$(prefix_path /usr/share/polkit-1/actions)"
         run_system_mutation_command install -m 755 "$setup_source" "$SYSTEM_LIB_DIR/setup-services"
         run_system_mutation_command install -m 644 "$setup_policy" "$(prefix_path /usr/share/polkit-1/actions)/io.github.staphylococcus.LGBuddy.setup.policy"
         for unit in LG_Buddy.service LG_Buddy_lifecycle.service lg_buddy.conf; do
@@ -525,7 +616,7 @@ perform_privileged_runtime_installation() {
     fi
     if [ -d "$KWIN_PAYLOAD_DIR" ]; then
         run_system_mutation_command rm -rf -- "$KWIN_INSTALL_DIR"
-        run_system_mutation_command install -d "$KWIN_INSTALL_DIR"
+        run_system_mutation_command mkdir -p "$KWIN_INSTALL_DIR"
         run_system_mutation_command cp -R "$KWIN_PAYLOAD_DIR/." "$KWIN_INSTALL_DIR/"
         # Updater staging is private; the root-owned installed payload must be
         # readable by the desktop user for inspection, loading, and local builds.
@@ -534,10 +625,10 @@ perform_privileged_runtime_installation() {
         run_system_mutation_command chmod 755 "$KWIN_INSTALL_DIR/setup.sh" "$KWIN_INSTALL_DIR/build.sh"
     fi
     system_upgrade_message "Installing LG Buddy desktop entry..."
-    run_system_mutation_command install -d "$APPLICATIONS_DIR"
+    run_system_mutation_command mkdir -p "$APPLICATIONS_DIR"
     run_system_mutation_command install -m 644 "$DESKTOP_ENTRY_SOURCE" "$DESKTOP_ENTRY_PATH"
     run_system_mutation_command rm -f "$LEGACY_DESKTOP_ENTRY_PATH"
-    run_system_mutation_command install -d "$APP_ICON_DIR"
+    run_system_mutation_command mkdir -p "$APP_ICON_DIR"
     run_system_mutation_command install -m 644 "$APP_ICON" "$APP_ICON_PATH"
     system_upgrade_message "Done."
 
@@ -545,11 +636,11 @@ perform_privileged_runtime_installation() {
 
 perform_privileged_services_installation() {
     system_upgrade_message "Copying and enabling systemd services..."
-    run_system_mutation_command install -d "$SYSTEMD_SYSTEM_DIR"
-    run_system_mutation_command install -d "$TMPFILES_CONF_DIR"
+    run_system_mutation_command mkdir -p "$SYSTEMD_SYSTEM_DIR"
+    run_system_mutation_command mkdir -p "$TMPFILES_CONF_DIR"
     run_system_mutation_command install -m 644 "$SCRIPT_DIR/systemd/LG_Buddy.service" "$SYSTEMD_SERVICE_PATH"
     run_system_mutation_command install -m 644 "$SCRIPT_DIR/systemd/lg_buddy.conf" "$TMPFILES_CONF_PATH"
-    run_system_mutation_command install -d "$SYSTEMD_SERVICE_OVERRIDE_DIR"
+    run_system_mutation_command mkdir -p "$SYSTEMD_SERVICE_OVERRIDE_DIR"
     run_system_mutation_command install -m 644 "$SYSTEM_CONFIG_OVERRIDE_TMP" "${SYSTEMD_SERVICE_OVERRIDE_DIR}/config.conf"
 
     if [ "$UPGRADE_MODE" -eq 0 ]; then
@@ -557,9 +648,9 @@ perform_privileged_services_installation() {
     fi
 
     run_system_mutation_command install -m 644 "$SCRIPT_DIR/systemd/LG_Buddy_lifecycle.service" "$SYSTEMD_LIFECYCLE_SERVICE_PATH"
-    run_system_mutation_command install -d "$SYSTEMD_LIFECYCLE_OVERRIDE_DIR"
+    run_system_mutation_command mkdir -p "$SYSTEMD_LIFECYCLE_OVERRIDE_DIR"
     run_system_mutation_command install -m 644 "$SYSTEM_CONFIG_OVERRIDE_TMP" "${SYSTEMD_LIFECYCLE_OVERRIDE_DIR}/config.conf"
-    run_system_mutation_command install -d "$NM_PRE_DOWN_DIR"
+    run_system_mutation_command mkdir -p "$NM_PRE_DOWN_DIR"
     run_system_mutation_command install -m 755 "$NM_HOOK_TMP" "$NM_LIFECYCLE_HOOK_PATH"
 
     if [ "$SKIP_SYSTEMD_ACTIONS" = "1" ]; then
@@ -635,6 +726,7 @@ run_system_upgrade_helper() {
     SYSTEM_UPGRADE_MUTATION_EMITTED=0
 
     system_upgrade_status authorized
+    preflight_installation
     perform_privileged_installation
     system_upgrade_status root_complete
 }
@@ -862,31 +954,37 @@ if [ "$UPGRADE_MODE" -eq 0 ] && ! config_has_saved_tv_profile; then
 fi
 
 if [ "$UPGRADE_MODE" -eq 1 ]; then
+    REMOVE_LEGACY_ENVIRONMENT=1
+    # Reject incompatible candidates before scanning the legacy environment.
+    # This compatibility check is read-only, just like the mutation-plan guard.
     echo ""
     echo "Running candidate upgrade preflight..."
     "$RUNTIME_BINARY" upgrade-preflight "$SCRIPT_DIR"
+fi
+# Check the complete system plan before even staging temporary installation
+# files, installing dependencies, creating user state, or changing services.
+preflight_installation
+
+if [ "$UPGRADE_MODE" -eq 1 ]; then
     resolve_gui_binary
     resolve_app_icon
     load_upgrade_configuration
-    REMOVE_LEGACY_ENVIRONMENT=1
     "$RUNTIME_BINARY" upgrade-preflight "$SCRIPT_DIR" --remove-legacy-env
-    check_install_prerequisites
-    validate_candidate_binary_identity
 else
     resolve_gui_binary
     resolve_app_icon
     if [ "$FRESH_SETUP_MODE" -eq 0 ]; then
         load_existing_configuration
     fi
-    check_install_prerequisites
-    validate_candidate_binary_identity
+fi
 
-    if [ "$FRESH_SETUP_MODE" -eq 1 ]; then
-        create_empty_config_if_absent
-        echo "Prepared an empty user configuration for first-run TV pairing."
-        if [ "$HEADLESS" -eq 0 ]; then
-            echo "Pair your TV, then complete background service setup in LG Buddy."
-        fi
+check_install_prerequisites
+validate_candidate_binary_identity
+if [ "$FRESH_SETUP_MODE" -eq 1 ]; then
+    create_empty_config_if_absent
+    echo "Prepared an empty user configuration for first-run TV pairing."
+    if [ "$HEADLESS" -eq 0 ]; then
+        echo "Pair your TV, then complete background service setup in LG Buddy."
     fi
 fi
 

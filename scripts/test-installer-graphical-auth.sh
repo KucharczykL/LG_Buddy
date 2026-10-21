@@ -33,6 +33,11 @@ cat >"$BUNDLE/lg-buddy" <<'EOF'
 #!/bin/sh
 set -eu
 case "${1:-}" in
+    installer-preflight)
+        # Keep this fixture focused on authorization and post-mutation errors.
+        # Real preflight refusal/preservation is covered by installer_guard.rs.
+        exit 0
+        ;;
     config-binding)
         exec "${LG_BUDDY_BINDING_TEST_RUNTIME:?}" "$@"
         ;;
