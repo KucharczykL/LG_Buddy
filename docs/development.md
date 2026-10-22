@@ -203,10 +203,12 @@ brightness deep link, including focus handoff from another view. Installed
 smoke keeps the desktop entry, runtime, and GUI together.
 
 PR CI runs verification and the KWin checks first, then builds the candidate
-bundle and GUI journey fixtures once. Ubuntu bundle checks and Fedora/Arch
-checks consume those artifacts in parallel. The required `bundle-smoke-test`
-check also fails if artifact production fails or is skipped. No installed or
-cross-version checks are omitted.
+bundle and GUI journey fixtures once. Ubuntu runs the release-bundle, installed
+GUI, and cross-version upgrade suites in separate matrix jobs, each with a
+20-minute limit. Those jobs and Fedora/Arch checks consume the same artifacts
+in parallel. The required `bundle-smoke-test` check passes only when artifact
+production and every Ubuntu smoke suite succeed; failures, timeouts, and skipped
+jobs fail the check.
 
 The root ownership checks execute the library test binary that Cargo already
 built for the ordinary suite. The TV fixture shares the GNU debug build and

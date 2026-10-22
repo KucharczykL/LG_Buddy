@@ -1,5 +1,5 @@
-//! Read-only guard for the bundle installer's complete mutation plan.
-//! The shell owns path selection; this module reuses host ownership and mount facts.
+//! Read-only mutation guard for bundle installation and host-integration artifacts.
+//! Callers select paths; this module reuses host ownership and mount facts.
 use super::{FilesystemFacts, OsFilesystemFacts, PackageDatabase, PathKind, PathOwnership};
 use std::collections::HashSet;
 use std::io;
@@ -189,17 +189,7 @@ impl<F: FilesystemFacts> Guard<'_, F> {
     }
 }
 
-fn check(
-    filesystem: &impl FilesystemFacts,
-    packages: &PackageDatabase,
-    arguments: &[String],
-) -> io::Result<()> {
-    let Some((root, mut operations)) = arguments.split_first() else {
-        return Err(io::Error::other(
-            "installer preflight requires an installation root and mutation plan",
-        ));
-    };
-    let root = Path::new(root);
+fn mutable_host(filesystem: &impl FilesystemFacts, root: &Path) -> io::Result<()> {
     absolute(root)?;
     for marker in ["etc/NIXOS", "run/ostree-booted"] {
         let marker = root.join(marker);
@@ -214,6 +204,41 @@ fn check(
             Err(error) => return Err(refused(&marker, error)),
         }
     }
+    Ok(())
+}
+
+/// KWin's host-required artifact exception: guard the individual plugin file.
+/// Existing vendor-owned container directories are traversed without mutation.
+/// The caller still constrains the loader root and application-specific filename.
+pub(crate) fn check_host_artifact(
+    filesystem: &impl FilesystemFacts,
+    packages: &PackageDatabase,
+    root: &Path,
+    destination: &Path,
+    removing: bool,
+) -> io::Result<()> {
+    mutable_host(filesystem, root)?;
+    Guard {
+        filesystem,
+        packages,
+        root,
+        owners_checked: HashSet::new(),
+    }
+    .destination(destination, false, removing)
+}
+
+fn check(
+    filesystem: &impl FilesystemFacts,
+    packages: &PackageDatabase,
+    arguments: &[String],
+) -> io::Result<()> {
+    let Some((root, mut operations)) = arguments.split_first() else {
+        return Err(io::Error::other(
+            "installer preflight requires an installation root and mutation plan",
+        ));
+    };
+    let root = Path::new(root);
+    mutable_host(filesystem, root)?;
     let mut guard = Guard {
         filesystem,
         packages,
@@ -527,6 +552,96 @@ mod tests {
         .unwrap_err()
         .to_string()
         .contains("immutable/declarative"));
+    }
+
+    #[test]
+    fn host_artifact_exception_preserves_vendor_directories_and_checks_each_file() {
+        let f = Fixture::new();
+        let artifact = f.file("usr/lib/qt6/plugins/kwin/plugins/plugin.so");
+        let directory = artifact.parent().unwrap();
+        let before = fs::metadata(directory).unwrap().permissions().mode();
+        // KWin itself can own the shared directory; only the artifact is a
+        // mutation destination. Traversing the container does not adopt it.
+        for removing in [false, true] {
+            check_host_artifact(
+                &OsFilesystemFacts,
+                &packages(directory.to_owned(), owned(directory)),
+                &f.0,
+                &artifact,
+                removing,
+            )
+            .unwrap();
+            for result in [
+                owned(&artifact),
+                ProbeOutcome::Ran {
+                    code: 0,
+                    stdout: format!(
+                        "first: {}\nsecond: {}\n",
+                        artifact.display(),
+                        artifact.display()
+                    ),
+                    stderr: String::new(),
+                },
+                ProbeOutcome::Failed("database unavailable".into()),
+                ProbeOutcome::Unavailable,
+            ] {
+                assert!(check_host_artifact(
+                    &OsFilesystemFacts,
+                    &packages(artifact.clone(), result),
+                    &f.0,
+                    &artifact,
+                    removing,
+                )
+                .is_err());
+            }
+        }
+        assert_eq!(fs::read_to_string(&artifact).unwrap(), "retained");
+        assert_eq!(
+            fs::metadata(directory).unwrap().permissions().mode(),
+            before
+        );
+    }
+
+    #[test]
+    fn host_artifact_exception_refuses_read_only_filesystems_and_managed_hosts() {
+        for existing in [false, true] {
+            let f = Fixture::new();
+            let directory = f.0.join("usr/lib/qt6/plugins/kwin/plugins");
+            fs::create_dir_all(&directory).unwrap();
+            let artifact = directory.join("plugin.so");
+            if existing {
+                fs::write(&artifact, "retained").unwrap();
+            }
+            for removing in [false, true] {
+                assert!(check_host_artifact(
+                    &ReadOnlyAt(directory.clone()),
+                    &unowned(),
+                    &f.0,
+                    &artifact,
+                    removing,
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("read-only"));
+            }
+        }
+        for marker in ["etc/NIXOS", "run/ostree-booted"] {
+            let f = Fixture::new();
+            let artifact = f.file("usr/lib/qt6/plugins/kwin/plugins/plugin.so");
+            f.file(marker);
+            for removing in [false, true] {
+                assert!(check_host_artifact(
+                    &OsFilesystemFacts,
+                    &unowned(),
+                    &f.0,
+                    &artifact,
+                    removing,
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("immutable/declarative"));
+            }
+        }
     }
 
     #[test]
