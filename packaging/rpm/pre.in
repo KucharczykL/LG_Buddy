@@ -26,7 +26,9 @@ while IFS= read -r path; do
     done
     if [ -e "$path" ] || [ -L "$path" ]; then
         [ -f "$path" ] && [ ! -L "$path" ] || refuse "unsafe payload $path"
-        owner=$(env -i PATH="$PATH" LC_ALL=C HOME=/root /usr/bin/rpm --query --file --queryformat '%{NAME}:%{ARCH}\n' -- "$path") \
+        # RPM 6.0 queries otherwise try to lock the keyring during this transaction.
+        # This reads installed ownership only; DNF verifies incoming package trust.
+        owner=$(env -i PATH="$PATH" LC_ALL=C HOME=/root /usr/bin/rpm --query --nosignature --file --queryformat '%{NAME}:%{ARCH}\n' -- "$path") \
             || refuse "unowned or unverifiable payload $path"
         case "$owner" in
             "lg-buddy:x86_64") ;;

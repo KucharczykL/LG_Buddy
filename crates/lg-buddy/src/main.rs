@@ -9,9 +9,14 @@ fn main() -> ExitCode {
     let arguments: Vec<String> = env::args().skip(1).collect();
     if arguments
         .first()
-        .is_some_and(|arg| arg == "apply-debian-update")
+        .is_some_and(|arg| matches!(arg.as_str(), "apply-debian-update" | "apply-rpm-update"))
     {
-        return match lg_buddy::debian_update::run(&arguments[1..]) {
+        let result = if arguments[0] == "apply-rpm-update" {
+            lg_buddy::rpm_update::run(&arguments[1..])
+        } else {
+            lg_buddy::debian_update::run(&arguments[1..])
+        };
+        return match result {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("LG Buddy: {error}");

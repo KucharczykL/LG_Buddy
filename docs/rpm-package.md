@@ -2,10 +2,10 @@
 
 The local builder produces an `x86_64` RPM from the verified release bundle,
 following the [package ownership contract](package-ownership.md). Its baseline
-is Fedora 43. Package assembly and isolated lifecycle coverage are the first
-slice of [#135](https://github.com/Staphylococcus/LG_Buddy/issues/135).
-DNF updater integration and real Fedora VM qualification remain separate
-steps. Public package assets and production canaries belong to
+is Fedora 43. Package assembly, lifecycle checks and DNF updater integration
+implement [#135](https://github.com/Staphylococcus/LG_Buddy/issues/135).
+Real Fedora VM qualification is a separate step. Public package assets and
+production canaries belong to
 [#136](https://github.com/Staphylococcus/LG_Buddy/issues/136).
 
 ## Build
@@ -77,6 +77,31 @@ files. Preserve modified/foreign files for administrator resolution and never
 follow the pointer into a user's data. User-data reset is a separate operation
 by that user. Installing a local RPM does not configure a DNF repository.
 
+## Updates
+
+The installed GUI and `lg-buddy updates install` use the shared channel,
+discovery and explicit confirmation flow. An RPM-owned installation selects
+the matching `.rpm`, checks official release/tag/checksum metadata and both
+embedded binary identities, then asks for ordinary administrator authorization.
+The privileged helper independently re-fetches the release identity and digest;
+caller-supplied paths, digests and command arguments cannot choose root work.
+
+DNF5 stores an upgrade transaction first. LG Buddy checks that it selects the
+exact newer local package, permits only dependency installs and same-package
+upgrades/replacements, and refuses removals, downgrades, foreign replacements
+and unsupported transaction metadata. Version locks stay in force. The fixed
+commands disable weak dependencies and obsoletes, keep repository GPG checks,
+and replay the checked transaction with DNF's installed-state checks intact.
+They never use `--nogpgcheck`, `--allowerasing` or replay's ignore options.
+Local package authenticity comes from the same independently verified GitHub
+release/digest boundary as APT; stricter administrator DNF policy can still
+refuse installation.
+
+Afterward the updater verifies the exact RPM database version, ownership and
+both installed binary identities before relaunching GTK as the invoking user.
+A newer release still needs publication as an RPM asset; no package repository
+is installed or inferred from the update channel.
+
 ## Lifecycle checks
 
 CI builds the native package twice and runs the real DNF/RPM lifecycle in a
@@ -102,6 +127,9 @@ metadata. The converted profile remains the removal retention baseline.
 
 Running-manager commands are recorded fakes; offline enablement-link removal
 uses real `systemctl`. These checks do not qualify real desktop activation,
-polkit prompts, reboot or the updater's newer-upstream-release path. Those are
-separate #135 integration and VM steps. The RPM job is part of the existing
+polkit prompts or reboot. The native updater smoke additionally covers root
+digest refusal, version-lock refusal, declined confirmation, verified newer
+package installation, retained user data and normal-user GTK relaunch. Its
+loopback HTTP transport and sudo authorization are test substitutes; real
+desktop authentication and reboot require VM qualification. The RPM job is part of the existing
 required `bundle-smoke-test` aggregate check.

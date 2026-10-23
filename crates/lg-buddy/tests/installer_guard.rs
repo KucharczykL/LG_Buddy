@@ -269,8 +269,8 @@ fn assert_installed_files_were_checked(fixture: &Fixture) {
 #[test]
 fn updater_refusals_preserve_user_state_and_never_authorize_bundle_installation() {
     for (family, mode, expected) in [
-        ("dpkg-query", "owned", "APT"),
-        ("rpm", "owned", "DNF"),
+        ("dpkg-query", "owned", "Native package state"),
+        ("rpm", "owned", "Native package state"),
         ("pacman", "owned", "pacman"),
         ("dpkg-query", "conflicting", "could not verify"),
         ("dpkg-query", "error", "could not verify"),

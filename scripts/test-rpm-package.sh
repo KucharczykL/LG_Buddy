@@ -39,6 +39,10 @@ install_package() {
         cat "$work/dnf.log" >&2
         fail "DNF installation failed"
     fi
+    if grep -Fq "can't create transaction lock" "$work/dnf.log"; then
+        cat "$work/dnf.log" >&2
+        fail "RPM ownership queries attempted a nested transaction lock"
+    fi
 }
 refuses_unpack() {
     if rpm --upgrade "$candidate" >"$work/refusal.log" 2>&1; then

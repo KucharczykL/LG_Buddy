@@ -181,12 +181,6 @@ mod tests {
         for (ownership, guidance) in [
             (
                 InstallationOwnership::Package {
-                    family: PackageFamily::Rpm,
-                },
-                "DNF",
-            ),
-            (
-                InstallationOwnership::Package {
                     family: PackageFamily::Pacman,
                 },
                 "pacman",
@@ -233,6 +227,24 @@ mod tests {
     }
 
     #[test]
+    fn healthy_dnf_installations_offer_the_shared_install_flow() {
+        use crate::upgrade_preflight::{InstallationOwnership, PackageFamily};
+        let mut app = application("stable");
+        let mut result = report(UpdateChannel::Stable, true);
+        result.installation_ownership = InstallationOwnership::Package {
+            family: PackageFamily::Rpm,
+        };
+        complete_check(&mut app, Ok(result));
+        let row = app.presentation().updater();
+        assert_eq!(row.action().intent(), SettingsIntent::PrepareUpdateInstall);
+        assert!(row.action().enabled());
+        assert!(!row.description().contains("cannot install"));
+        assert!(app
+            .handle_intent(SettingsIntent::PrepareUpdateInstall)
+            .is_some());
+    }
+
+    #[test]
     fn ownership_recheck_replaces_a_stale_offer_with_package_guidance() {
         use crate::upgrade_preflight::{InstallationOwnership, PackageFamily};
         let mut app = application("stable");
@@ -256,7 +268,7 @@ mod tests {
                 &installation,
                 Ok(UpdateInstallOutcome::Restricted {
                     ownership: InstallationOwnership::Package {
-                        family: PackageFamily::Rpm,
+                        family: PackageFamily::Pacman,
                     },
                     failure: None,
                 }),
@@ -264,7 +276,7 @@ mod tests {
             .unwrap();
         assert!(transition.update_install_operation().is_none());
         let row = app.presentation().updater();
-        assert!(row.description().contains("DNF"));
+        assert!(row.description().contains("pacman"));
         assert_eq!(row.action().intent(), SettingsIntent::CheckForUpdates);
         assert!(row.action().enabled());
         assert!(!app.is_mutating());

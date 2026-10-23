@@ -53,6 +53,8 @@ jobs:
           print(executables[0])')"
           # Owner subprocesses must reach the binary even if the checkout's
           # parent directories are private to the runner account.
+          install -m 755 "$test_binary" target/native-package-tests
+          strip --strip-debug target/native-package-tests
           privileged_test_dir="$(mktemp -d)"
           trap 'rm -rf "$privileged_test_dir"' EXIT
           chmod 755 "$privileged_test_dir"
@@ -68,6 +70,13 @@ jobs:
             "$test_binary" --list --format=terse | grep -Fx "$test: test"
             sudo env TMPDIR="$privileged_test_dir" "$test_binary" "$test" --exact
           done
+
+      - name: Save native package verification tests
+        uses: actions/upload-artifact@v6
+        with:
+          name: ci-native-package-tests
+          path: target/native-package-tests
+          if-no-files-found: error
 
       - name: Install GTK test prerequisites
         run: |
@@ -226,6 +235,23 @@ jobs:
           name: ci-release-bundle
           path: dist
 
+      - name: Download updater transport fixtures
+        uses: actions/download-artifact@v7
+        with:
+          name: ci-gui-journey-fixtures
+          path: updater-fixtures
+
+      - name: Download native verification tests
+        uses: actions/download-artifact@v7
+        with:
+          name: ci-native-package-tests
+          path: native-tests
+
+      - name: Verify RPM acquisition and privileged receipt
+        run: |
+          chmod 755 native-tests/native-package-tests
+          native-tests/native-package-tests release_bundle::rpm:: --nocapture
+
       - name: Verify native RPM version ordering and package inputs
         run: python3 scripts/test_build_rpm_package.py
 
@@ -246,6 +272,17 @@ jobs:
         env:
           LG_BUDDY_DISPOSABLE_PACKAGE_TEST: "1"
         run: bash scripts/test-rpm-package.sh dist/*-1.x86_64.rpm dist/*-2.x86_64.rpm
+
+      - name: Verify DNF update handoff
+        shell: bash
+        env:
+          LG_BUDDY_DISPOSABLE_PACKAGE_TEST: "1"
+        run: |
+          chmod 755 updater-fixtures/*
+          python3 scripts/test-debian-update.py --format rpm \
+            --archive dist/*.tar.gz --package dist/*-1.x86_64.rpm \
+            --runtime-fixture updater-fixtures/lg-buddy \
+            --gui-fixture updater-fixtures/lg-buddy-gui
 
   bundle-build:
     runs-on: ubuntu-24.04

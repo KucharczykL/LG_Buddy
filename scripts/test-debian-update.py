@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the installed updater through real APT in a disposable Ubuntu container.
+"""Exercise the installed updater through APT or DNF in a disposable container.
 
 The baseline uses the existing debug-only transport fixtures at version 0.0.0.
 Only GitHub HTTP transport and administrator authentication are substituted.
@@ -91,6 +91,7 @@ def snapshot(paths: list[Path]) -> list[tuple[bytes, int, int, int]]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--format", choices=("debian", "rpm"), default="debian")
     parser.add_argument("--archive", type=Path)
     parser.add_argument("--package", type=Path)
     parser.add_argument("--runtime-fixture", type=Path)
@@ -104,12 +105,17 @@ def main() -> None:
     assert os.geteuid() == 0 and Path("/.dockerenv").exists() and os.environ.get("LG_BUDDY_DISPOSABLE_PACKAGE_TEST") == "1", "requires an explicitly disposable root Docker environment"
     os.umask(0o022)
     assert all((args.archive, args.package, args.runtime_fixture, args.gui_fixture))
+    rpm = args.format == "rpm"
+    manager = "DNF" if rpm else "APT"
+    protocol = "apply-rpm-update" if rpm else "apply-debian-update"
+    def installed_version() -> str:
+        return checked("rpm", "--query", "--queryformat", "%{VERSION}-%{RELEASE}", "lg-buddy") if rpm else checked("dpkg-query", "-W", "-f=${Version}", "lg-buddy")
     facts = archive_facts(args.archive)
     username = "lgdeb-update"
     checked("useradd", "--create-home", "--shell", "/bin/bash", username)
     user = pwd.getpwnam(username)
     sudoers = Path("/etc/sudoers.d/lg-buddy-debian-update-test")
-    sudoers.write_text(f'Defaults:{username} env_keep += "LG_BUDDY_TEST_GITHUB_ADDRESS"\n{username} ALL=(root) NOPASSWD: /usr/bin/lg-buddy apply-debian-update *\n')
+    sudoers.write_text(f'Defaults:{username} env_keep += "LG_BUDDY_TEST_GITHUB_ADDRESS"\n{username} ALL=(root) NOPASSWD: /usr/bin/lg-buddy {protocol} *\n')
     sudoers.chmod(0o440)
     checked("visudo", "--check", "--file", str(sudoers))
     try:
@@ -123,10 +129,38 @@ def main() -> None:
                 destination = root / "usr/bin" / name
                 shutil.copyfile(source, destination)
                 destination.chmod(0o755)
+                if rpm:
+                    checked("strip", "--strip-debug", str(destination))
                 assert checked(str(destination), "--version").startswith("lg-buddy 0.0.0\n")
-            baseline = work / "lg-buddy_0.0.0-1_amd64.deb"
-            checked("dpkg-deb", "--root-owner-group", "-Zgzip", "--build", str(root), str(baseline))
-            checked("apt-get", "install", "-y", "--no-install-recommends", str(baseline), env={**os.environ, "DEBIAN_FRONTEND": "noninteractive"})
+            if rpm:
+                spec = work / "baseline.spec"
+                spec.write_text(f"""Name: lg-buddy
+Version: 0.0.0
+Release: 1
+Epoch: 0
+Summary: Native updater debug transport baseline
+License: GPL-3.0-only
+BuildArch: x86_64
+%global debug_package %{{nil}}
+%global __os_install_post %{{nil}}
+%global _build_id_links none
+%description
+Only the transport fixture baseline for a disposable native updater smoke.
+%install
+mkdir -p %{{buildroot}}/usr/bin
+cp {root}/usr/bin/* %{{buildroot}}/usr/bin/
+%files
+%defattr(-,root,root,-)
+/usr/bin/lg-buddy
+/usr/bin/lg-buddy-gui
+""")
+                checked("rpmbuild", "--define", f"_topdir {work}/rpm-build", "--define", "_rpmformat 6", "--define", "_smp_build_ncpus 1", "--define", "_binary_payload w9.gzdio", "-bb", str(spec))
+                baseline = work / "rpm-build/RPMS/x86_64/lg-buddy-0.0.0-1.x86_64.rpm"
+                checked("dnf5", "--assumeyes", "--setopt=tsflags=", "install", str(baseline))
+            else:
+                baseline = work / "lg-buddy_0.0.0-1_amd64.deb"
+                checked("dpkg-deb", "--root-owner-group", "-Zgzip", "--build", str(root), str(baseline))
+                checked("apt-get", "install", "-y", "--no-install-recommends", str(baseline), env={**os.environ, "DEBIAN_FRONTEND": "noninteractive"})
             checked("runuser", "-u", username, "--", "/usr/bin/lg-buddy", "settings", "set", "updates.channel", "prerelease")
             config = Path(user.pw_dir) / ".config/lg-buddy/config.env"
             token = config.parent / "tvs/primary/access-token.json"
@@ -157,12 +191,20 @@ def main() -> None:
                 data[-1] ^= 1
                 corrupt.write_bytes(data)
                 with corrupt.open("rb") as stream:
-                    refused = subprocess.run(["/usr/bin/lg-buddy", "apply-debian-update", str(facts["tag"]), str(facts["commit"])],
+                    refused = subprocess.run(["/usr/bin/lg-buddy", protocol, str(facts["tag"]), str(facts["commit"])],
                                              stdin=stream, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                              env=environment, timeout=60)
-                assert refused.returncode != 0 and b"mutation_started" not in refused.stdout
-                assert checked("dpkg-query", "-W", "-f=${Version}", "lg-buddy") == "0.0.0-1"
+                assert refused.returncode != 0 and b"mutation_started" not in refused.stdout, (refused.stdout, refused.stderr)
+                assert requests.exists() and b"digest" in refused.stderr, (refused.stdout, refused.stderr)
+                assert installed_version() == "0.0.0-1"
                 assert snapshot(retained) == before
+                if rpm:
+                    checked("dnf5", "versionlock", "add", "lg-buddy")
+                    with args.package.open("rb") as stream:
+                        held = subprocess.run(["/usr/bin/lg-buddy", protocol, str(facts["tag"]), str(facts["commit"])], stdin=stream, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, timeout=120)
+                    assert held.returncode != 0 and b"mutation_started" not in held.stdout and b"version locks" in held.stderr, (held.stdout, held.stderr)
+                    assert installed_version() == "0.0.0-1" and snapshot(retained) == before
+                    checked("dnf5", "versionlock", "delete", "lg-buddy")
                 prior_requests = len(requests.read_text().splitlines())
                 for answer in ("no", "yes"):
                     checked("runuser", "-u", username, "--", "dbus-run-session", "--", "xvfb-run", "-a",
@@ -172,11 +214,14 @@ def main() -> None:
                         recent = requests.read_text().splitlines()[prior_requests:]
                         assert not any("/releases/assets/" in line for line in recent), recent
                 expected_version = str(facts["version"]).replace("-", "~", 1) + "-1"
-                assert checked("dpkg-query", "-W", "-f=${Version}", "lg-buddy") == expected_version
+                assert installed_version() == expected_version
                 for binary in ("lg-buddy", "lg-buddy-gui"):
                     text = checked(f"/usr/bin/{binary}", "--version")
                     assert f'version: {facts["version"]}\n' in text and f'commit: {facts["commit"]}\n' in text
-                    assert checked("dpkg-query", "-S", f"/usr/bin/{binary}").strip() == f"lg-buddy: /usr/bin/{binary}"
+                    if rpm:
+                        assert checked("rpm", "--query", "--file", "--queryformat", "%{NAME}", f"/usr/bin/{binary}") == "lg-buddy"
+                    else:
+                        assert checked("dpkg-query", "-S", f"/usr/bin/{binary}").strip() == f"lg-buddy: /usr/bin/{binary}"
                 paths = [json.loads(line)["path"] for line in requests.read_text().splitlines()]
                 assert paths.count("/api.github.com/repos/Staphylococcus/LG_Buddy/releases/assets/1200") == 1
                 assert paths.count("/api.github.com/repos/Staphylococcus/LG_Buddy/releases/assets/1201") >= 3
@@ -186,7 +231,7 @@ def main() -> None:
                 thread.join(timeout=5)
     finally:
         sudoers.unlink(missing_ok=True)
-    print("Native APT updater passed: root digest refusal, decline, verified package upgrade, retained data and unprivileged GTK relaunch.")
+    print(f"Native {manager} updater passed: root digest refusal, decline, verified package upgrade, retained data and unprivileged GTK relaunch.")
 
 
 if __name__ == "__main__":

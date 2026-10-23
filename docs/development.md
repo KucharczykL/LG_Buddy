@@ -181,14 +181,14 @@ are reused without changing their modes.
 
 The updater uses the same fallible package database as installer preflight.
 Recognized bundles use the bundle installer. A healthy `lg-buddy` Debian package
-uses verified local-package acquisition and APT; DNF/pacman installations receive
-package-source guidance, and unverifiable ownership refuses automatic installation.
+uses verified local-package acquisition and APT; the RPM package uses DNF5.
+Pacman installations receive package-source guidance, and unverifiable ownership refuses automatic installation.
 Ownership is checked before release discovery and again after acquisition,
 before candidate checks or installer execution. GUI update checks remain
 available; supported delivery owners share the install action.
 
-APT adapter details and qualification limits are in the Debian guide; DNF
-delivery remains #135 and package publication remains #136. Downloadable release
+Native adapter details and qualification limits are in the Debian and RPM
+guides; package publication remains #136. Downloadable release
 packages do not configure a repository or promise that `apt upgrade` or
 `dnf upgrade` discovers LG Buddy releases.
 
