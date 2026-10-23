@@ -33,10 +33,11 @@ Python is a build/test dependency only.
 
 The example produces `lg-buddy_2.0.0~beta.1-1_amd64.deb`. Stable `2.0.0` becomes
 `2.0.0-1`; `--revision 2` permits a packaging-only revision of the same upstream
-release. Prerelease identifiers must each contain letters only or a number,
-separated by dots (`beta.2`, `rc.1`, `beta.2.ci`). Mixed identifiers such as
-`alpha10`, hyphenated identifiers and build metadata are refused because their
-native ordering could disagree with SemVer. Embedded version/channel/commit
+release. Supported prereleases are `alpha`, `beta` or `rc`, optionally followed
+by `.N` and `.ci` (`beta.2`, `rc.1`, `beta.2.ci`). Other prerelease forms and
+build metadata are refused because their native ordering could disagree with
+SemVer, including letter-only examples such as `alpha.a.1` versus `alpha.aa`.
+Embedded version/channel/commit
 identity remains the upstream identity, independent of the Debian revision.
 
 ## Install and retain configuration

@@ -34,15 +34,15 @@ class PackageError(RuntimeError):
 
 def debian_version(version: str, revision: int = 1) -> str:
     parsed = SemVer.parse(version)
-    # Mixed text/digit identifiers sort differently in dpkg and SemVer. Reject
-    # those rather than silently publishing a package with the wrong ordering.
-    if parsed.build or any(
-        not re.fullmatch(r"[A-Za-z]+|0|[1-9][0-9]*", part)
-        for part in parsed.prerelease
-    ):
+    # General SemVer identifiers do not preserve their ordering in dpkg, even
+    # when they contain only letters. Use the project's conventional channels.
+    prerelease = ".".join(parsed.prerelease)
+    if parsed.build or (prerelease and not re.fullmatch(
+        r"(?:alpha|beta|rc)(?:\.(?:0|[1-9][0-9]*))?(?:\.ci)?", prerelease
+    )):
         raise PackageError(
-            "Debian releases require dot-separated letter or numeric "
-            "prerelease identifiers and no build metadata"
+            "Debian releases require alpha, beta or rc, optionally followed "
+            "by .N and .ci, and no build metadata"
         )
     if revision < 1:
         raise PackageError("Debian revision must be a positive integer")

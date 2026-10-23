@@ -17,6 +17,7 @@ from build_debian_package import (
     PackageError, debian_version, stage_payload,
 )
 from release_bundle_manifest import ManifestError, ReleaseIdentity, render_manifest
+from release_promotion import SemVer
 from test_release_bundle_manifest import embedded_binary
 
 
@@ -77,11 +78,29 @@ class VersionTests(unittest.TestCase):
         subprocess.run(["dpkg", "--compare-versions", debian_version("2.0.0"), "lt", debian_version("2.0.0", 2)], check=True)
 
     def test_ambiguous_ordering_or_metadata_is_refused(self) -> None:
-        for version in ("2.0.0-alpha10", "2.0.0-alpha-1", "2.0.0+build.1"):
+        for version in (
+            "2.0.0-alpha10", "2.0.0-alpha-1", "2.0.0+build.1",
+            "2.0.0-alpha.a.1", "2.0.0-alpha.aa", "2.0.0-beta.1.2",
+            "2.0.0-preview.1",
+        ):
             with self.subTest(version=version), self.assertRaises(PackageError):
                 debian_version(version)
         with self.assertRaises(PackageError):
             debian_version("2.0.0", 0)
+
+    @unittest.skipUnless(shutil.which("dpkg"), "native version ordering requires dpkg")
+    def test_all_supported_prerelease_forms_keep_native_order(self) -> None:
+        versions = []
+        for channel in ("alpha", "beta", "rc"):
+            versions.append(f"2.0.0-{channel}")
+            for number in (0, 1, 2, 9, 10, 100):
+                versions.extend((f"2.0.0-{channel}.{number}", f"2.0.0-{channel}.{number}.ci"))
+            versions.append(f"2.0.0-{channel}.ci")
+        versions.append("2.0.0")
+        self.assertEqual(versions, sorted(versions, key=SemVer.parse))
+        for older, newer in zip(versions, versions[1:]):
+            with self.subTest(older=older, newer=newer):
+                subprocess.run(["dpkg", "--compare-versions", debian_version(older), "lt", debian_version(newer)], check=True)
 
 
 class PayloadTests(unittest.TestCase):
