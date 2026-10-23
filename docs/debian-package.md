@@ -4,8 +4,9 @@ The local builder produces an `amd64` `.deb` from the verified release bundle,
 following the [package ownership contract](package-ownership.md). Its baseline
 is Ubuntu 24.04. Package assembly, isolated lifecycle checks and the APT updater
 adapter are implemented under
-[#134](https://github.com/Staphylococcus/LG_Buddy/issues/134). Real Ubuntu VM
-qualification remains pending. Published package assets remain
+[#134](https://github.com/Staphylococcus/LG_Buddy/issues/134).
+[Ubuntu VM qualification](debian-vm-validation.md) also passed for the reviewed
+product source. Published package assets remain
 [#136](https://github.com/Staphylococcus/LG_Buddy/issues/136); the adapter requires
 a matching verified `.deb` on the selected release.
 
@@ -121,7 +122,8 @@ launch and removal/purge retention. Current and stale configuration/credential
 fixtures must remain byte-for-byte unchanged by root package operations.
 Running-manager commands are recorded fakes; offline enablement-link removal
 uses real `systemctl`. Real systemd activation, non-root startup conversion,
-desktop behavior and reboot require the separate Ubuntu VM qualification.
+desktop behavior and reboot are covered separately by the
+[Ubuntu VM qualification](debian-vm-validation.md).
 A packaging-revision upgrade does not
 qualify the updater's newer-upstream-release acquisition path.
 

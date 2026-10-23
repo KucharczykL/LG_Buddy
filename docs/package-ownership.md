@@ -3,8 +3,9 @@
 This is the common contract for Debian and RPM delivery under
 [#133](https://github.com/Staphylococcus/LG_Buddy/issues/133). The ownership,
 provisioning, binding, installer and updater prework is implemented. Debian
-package creation and its APT adapter have isolated coverage; real Ubuntu VM
-qualification remains [#134](https://github.com/Staphylococcus/LG_Buddy/issues/134).
+package creation and its APT adapter have isolated coverage and
+[Ubuntu VM qualification](debian-vm-validation.md) under
+[#134](https://github.com/Staphylococcus/LG_Buddy/issues/134).
 RPM delivery remains [#135](https://github.com/Staphylococcus/LG_Buddy/issues/135);
 publication remains
 [#136](https://github.com/Staphylococcus/LG_Buddy/issues/136). Requirements for
@@ -244,7 +245,7 @@ ownership guidance; uncertainty and changed ownership invalidate a stale offer.
 | Ownership | Implemented behavior | Remaining delivery work |
 | --- | --- | --- |
 | `Bundle` | Verified release-bundle installation | Preserve this path for existing bundles and Arch |
-| `Package { Dpkg }` | Verified local `.deb` acquisition and APT for the healthy `lg-buddy` package | #134 real Ubuntu VM qualification; #136 publication |
+| `Package { Dpkg }` | Verified local `.deb` acquisition and APT for the healthy `lg-buddy` package | #136 publication and public update canaries |
 | `Package { Rpm }` | Refuse self-install; show DNF guidance | #135 acquires a verified local `.rpm` and delegates installation to DNF |
 | `Package { Pacman }` | Refuse self-install; show pacman guidance | Externally managed; no pacman delivery in v2 |
 | `Unknown` | Refuse automatic installation | Remains refused, including conflicting/error observations |
@@ -261,7 +262,8 @@ revalidates the official release digest, stages only matching bytes under root
 control and invokes APT with fixed arguments and a clean environment. Native
 package state, ownership and both binaries are verified after the transaction.
 The real APT container smoke substitutes HTTP transport and authentication;
-desktop service managers, polkit and reboot still need Ubuntu VM qualification.
+desktop service managers, polkit and reboot also have separate
+[Ubuntu VM qualification](debian-vm-validation.md).
 
 ### Common identity tuple
 
@@ -387,4 +389,6 @@ upgrade, reboot and removal on actual Ubuntu/Fedora VMs. #136 adds exact-commit
 asset publication/checksum/digest verification and public package update
 canaries, while retaining bundle/Arch and historical bundle-upgrade coverage.
 Those delivery/real-host results must be recorded separately from prework
-fixture success; this document does not claim they have run.
+fixture success. The [Ubuntu VM record](debian-vm-validation.md) documents the
+Debian result; RPM/Fedora qualification and public package canaries remain
+separate work.
