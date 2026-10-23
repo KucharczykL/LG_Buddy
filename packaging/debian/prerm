@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+# Upgrades preserve activation. Only ordinary removal stops/disables services.
+if [ "$1" = remove ]; then
+    if [ -d /run/systemd/system ]; then
+        deb-systemd-invoke stop LG_Buddy_lifecycle.service LG_Buddy.service
+    fi
+    systemctl --system --no-reload disable LG_Buddy_lifecycle.service LG_Buddy.service
+fi
+exit 0

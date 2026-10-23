@@ -138,8 +138,50 @@ jobs:
       - name: Validate release bundle manifest contract
         run: python3 scripts/test_release_bundle_manifest.py
 
+      - name: Validate Debian package input contract
+        run: python3 scripts/test_build_debian_package.py
+
       - name: Validate GitHub response recorder
         run: python3 scripts/test_record_github_release_responses.py
+
+  debian-package:
+    runs-on: ubuntu-24.04
+    container: ubuntu:24.04
+    timeout-minutes: 20
+    needs: bundle-build
+    steps:
+      - name: Install package build and smoke prerequisites
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends binutils ca-certificates dbus-x11 dpkg-dev fonts-dejavu-core git libadwaita-1-0 libglib2.0-bin libgtk-4-1 passwd pkexec polkitd python3 systemd xauth xdotool xvfb
+
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Download verified release bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-release-bundle
+          path: dist
+
+      - name: Build reproducible Debian packages
+        shell: bash
+        run: |
+          archive=(dist/*.tar.gz)
+          test "${#archive[@]}" = 1
+          epoch="$(git show -s --format=%ct HEAD)"
+          python3 scripts/build_debian_package.py --archive "${archive[0]}" --source-date-epoch "$epoch" --output-dir dist
+          python3 scripts/build_debian_package.py --archive "${archive[0]}" --source-date-epoch "$epoch" --output-dir dist --revision 2
+          python3 scripts/build_debian_package.py --archive "${archive[0]}" --source-date-epoch "$epoch" --output-dir reproducible --revision 2
+          cmp dist/*-2_amd64.deb reproducible/*-2_amd64.deb
+
+      - name: Verify native package lifecycle
+        shell: bash
+        env:
+          LG_BUDDY_DISPOSABLE_PACKAGE_TEST: "1"
+        run: bash scripts/test-debian-package.sh dist/*-1_amd64.deb dist/*-2_amd64.deb
 
   bundle-build:
     runs-on: ubuntu-24.04

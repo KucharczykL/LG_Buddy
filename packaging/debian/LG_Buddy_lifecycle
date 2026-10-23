@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+[ "${2:-}" = pre-down ] || exit 0
+exec /usr/bin/lg-buddy nm-pre-down

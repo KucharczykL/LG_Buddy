@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+case "$1" in
+    remove|purge)
+        if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+            systemctl --system daemon-reload
+        fi
+        ;;
+esac
+# Bindings, drop-ins, user configuration and credentials are never payload.
+exit 0
