@@ -4,7 +4,8 @@ The local builder produces an `x86_64` RPM from the verified release bundle,
 following the [package ownership contract](package-ownership.md). Its baseline
 is Fedora 43. Package assembly, lifecycle checks and DNF updater integration
 implement [#135](https://github.com/Staphylococcus/LG_Buddy/issues/135).
-Real Fedora VM qualification is a separate step. Public package assets and
+Real Fedora desktop qualification is recorded in
+[rpm-vm-validation.md](rpm-vm-validation.md). Public package assets and
 production canaries belong to
 [#136](https://github.com/Staphylococcus/LG_Buddy/issues/136).
 
@@ -131,5 +132,6 @@ polkit prompts or reboot. The native updater smoke additionally covers root
 digest refusal, version-lock refusal, declined confirmation, verified newer
 package installation, retained user data and normal-user GTK relaunch. Its
 loopback HTTP transport and sudo authorization are test substitutes; real
-desktop authentication and reboot require VM qualification. The RPM job is part of the existing
+desktop authentication and reboot are covered by the
+[VM qualification](rpm-vm-validation.md). The RPM job is part of the existing
 required `bundle-smoke-test` aggregate check.

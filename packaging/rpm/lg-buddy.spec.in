@@ -19,6 +19,7 @@ Requires: libadwaita >= 1.5
 Requires: systemd
 Requires: polkit
 Requires: dnf5
+Requires: rpm
 Requires(pre): coreutils, rpm
 Requires(preun): systemd
 Requires(post): systemd
