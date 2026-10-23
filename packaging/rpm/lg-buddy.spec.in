@@ -1,0 +1,49 @@
+# The input is an already-built, identity-verified release. Preserve its bytes.
+%global debug_package %{nil}
+%global __os_install_post %{nil}
+%global _build_id_links none
+# Optional KWin prebuilts must neither require nor provide desktop libraries.
+%global __requires_exclude_from ^/usr/lib/lg-buddy/kwin/.*$
+%global __provides_exclude_from ^/usr/lib/lg-buddy/kwin/.*$
+
+Name: lg-buddy
+Epoch: 0
+Version: @VERSION@
+Release: @RELEASE@
+Summary: Native LG webOS TV and desktop integration
+License: GPL-3.0-only
+URL: https://github.com/Staphylococcus/LG_Buddy
+BuildArch: x86_64
+Requires: gtk4 >= 4.14
+Requires: libadwaita >= 1.5
+Requires: systemd
+Requires: polkit
+Requires: dnf5
+Requires(pre): coreutils, rpm
+Requires(preun): systemd
+Requires(post): systemd
+Requires(postun): systemd
+
+%description
+LG Buddy provides native LG webOS TV control and a GTK frontend with desktop
+session and system integration. First-run setup belongs to the installed app.
+
+%install
+mkdir -p "%{buildroot}"
+cp -a -- @PAYLOAD_ROOT@/. "%{buildroot}/"
+
+%pre
+@PRE@
+
+%post
+@POST@
+
+%preun
+@PREUN@
+
+%postun
+@POSTUN@
+
+%files
+%defattr(-,root,root,-)
+@FILES@

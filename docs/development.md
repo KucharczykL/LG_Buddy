@@ -141,6 +141,8 @@ The [Debian package development guide](debian-package.md) covers the local
 package builder, APT updater and isolated lifecycle checks. The
 [Ubuntu VM qualification](debian-vm-validation.md) records real desktop,
 service-manager, polkit and reboot coverage separately under #134.
+The [RPM package development guide](rpm-package.md) covers the Fedora 43
+package builder and isolated native lifecycle checks under #135.
 
 `install.sh` is installer-only. It does not build the runtime or GUI.
 
@@ -215,7 +217,8 @@ bundle and GUI journey fixtures once. Ubuntu runs the release-bundle, installed
 GUI, and cross-version upgrade suites in separate matrix jobs, each with a
 20-minute limit. Those jobs and Fedora/Arch checks consume the same artifacts
 in parallel. The required `bundle-smoke-test` check passes only when artifact
-production and every Ubuntu smoke suite succeed; failures, timeouts, and skipped
+production, every Ubuntu smoke suite and both native package jobs succeed;
+failures, timeouts, and skipped
 jobs fail the check.
 
 The root ownership checks execute the library test binary that Cargo already

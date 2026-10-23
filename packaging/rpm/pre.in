@@ -1,0 +1,58 @@
+#!/bin/sh
+set -eu
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+unset RPM_CONFIGDIR RPM_MACROS RPMRC
+
+refuse() {
+    echo "LG Buddy: $1. Resolve the existing installation before installing this package." >&2
+    exit 1
+}
+
+# RPM may adopt unowned or identical files belonging to another package.
+# Refuse that adoption, redirected ancestors, and local unit shadows.
+while IFS= read -r path; do
+    directory=${path%/*}
+    while [ "$directory" != / ]; do
+        [ ! -L "$directory" ] || refuse "redirected directory $directory"
+        if [ -e "$directory" ]; then
+            [ -d "$directory" ] || refuse "non-directory $directory"
+            [ "$(stat -c %u "$directory")" = 0 ] || refuse "non-root directory $directory"
+            mode=$(stat -c %a "$directory")
+            [ "$((0$mode & 022))" = 0 ] || refuse "writable directory $directory"
+        fi
+        directory=${directory%/*}
+        [ -n "$directory" ] || directory=/
+    done
+    if [ -e "$path" ] || [ -L "$path" ]; then
+        [ -f "$path" ] && [ ! -L "$path" ] || refuse "unsafe payload $path"
+        owner=$(env -i PATH="$PATH" LC_ALL=C HOME=/root /usr/bin/rpm --query --file --queryformat '%{NAME}:%{ARCH}\n' -- "$path") \
+            || refuse "unowned or unverifiable payload $path"
+        case "$owner" in
+            "lg-buddy:x86_64") ;;
+            *) refuse "conflicting payload $path" ;;
+        esac
+    fi
+done <<'LG_BUDDY_PAYLOAD'
+@PAYLOAD@
+LG_BUDDY_PAYLOAD
+for path in \
+    /etc/systemd/system/LG_Buddy.service \
+    /etc/systemd/system/LG_Buddy_lifecycle.service \
+    /etc/systemd/user/LG_Buddy_screen.service \
+    /etc/systemd/user/LG_Buddy_update_check.service \
+    /etc/systemd/user/LG_Buddy_update_check.timer \
+    /etc/tmpfiles.d/lg_buddy.conf \
+    /etc/NetworkManager/dispatcher.d/pre-down.d/LG_Buddy_lifecycle \
+    /etc/systemd/system/LG_Buddy_wake.service \
+    /etc/systemd/system/LG_Buddy_sleep.service \
+    /etc/systemd/system/LG_Buddy_wake.service.d/config.conf \
+    /etc/systemd/system/LG_Buddy_sleep.service.d/config.conf \
+    /etc/NetworkManager/dispatcher.d/pre-down.d/LG_Buddy_sleep \
+    /usr/lib/systemd/system-sleep/LG_Buddy_sleep_hook \
+    /usr/lib/lg-buddy/config-path; do
+    if [ -e "$path" ] || [ -L "$path" ]; then
+        refuse "local integration or legacy binding $path"
+    fi
+done
+exit 0

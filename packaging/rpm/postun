@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+if [ -d /run/systemd/system ]; then
+    systemctl --system daemon-reload
+fi
+# Dynamic bindings, user configuration and credentials are never payload.
+exit 0
