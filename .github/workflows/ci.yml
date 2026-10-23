@@ -73,6 +73,10 @@ jobs:
         run: |
           # Chrome is unused; its third-party index must not block Ubuntu dependencies.
           sudo rm -fv /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
+          # Avoid slow Azure mirror downloads consuming the test job's time budget.
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i 's|http://azure[.]archive[.]ubuntu[.]com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/apt-mirrors.txt
+          fi
           sudo apt-get update
           sudo apt-get install -y at-spi2-core bubblewrap dbus-x11 gjs libadwaita-1-dev libglib2.0-bin libgtk-4-dev pkexec python3-dbus python3-pyatspi xdotool xvfb
 
@@ -227,6 +231,10 @@ jobs:
         run: |
           # Chrome is unused; its third-party index must not block Ubuntu dependencies.
           sudo rm -fv /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
+          # Avoid slow Azure mirror downloads consuming the build job's time budget.
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i 's|http://azure[.]archive[.]ubuntu[.]com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/apt-mirrors.txt
+          fi
           sudo apt-get update
           sudo apt-get install -y binutils libadwaita-1-dev libgtk-4-dev musl-tools
 
@@ -303,6 +311,10 @@ jobs:
         run: |
           # Chrome is unused; its third-party index must not block Ubuntu dependencies.
           sudo rm -fv /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
+          # Avoid slow Azure mirror downloads consuming the smoke job's time budget.
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i 's|http://azure[.]archive[.]ubuntu[.]com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/apt-mirrors.txt
+          fi
           sudo apt-get update
           sudo apt-get install -y at-spi2-core binutils dbus-x11 libadwaita-1-dev libgtk-4-dev pkexec python3-dbus python3-pyatspi strace xdotool xvfb
           # Prove current installation and GUI behavior without the retired dialog tool or external idle command.
