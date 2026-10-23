@@ -155,16 +155,22 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends binutils ca-certificates dbus-x11 dpkg-dev fonts-dejavu-core git libadwaita-1-0 libglib2.0-bin libgtk-4-1 passwd pkexec polkitd python3 systemd xauth xdotool xvfb
+          apt-get install -y --no-install-recommends binutils ca-certificates dbus-x11 dpkg-dev fonts-dejavu-core git libadwaita-1-0 libglib2.0-bin libgtk-4-1 passwd pkexec polkitd procps python3 sudo systemd xauth xdotool xvfb
 
       - name: Check out repository
         uses: actions/checkout@v5
 
       - name: Download verified release bundle
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: ci-release-bundle
           path: dist
+
+      - name: Download debug-only updater transport fixtures
+        uses: actions/download-artifact@v7
+        with:
+          name: ci-gui-journey-fixtures
+          path: updater-fixtures
 
       - name: Build reproducible Debian packages
         shell: bash
@@ -182,6 +188,16 @@ jobs:
         env:
           LG_BUDDY_DISPOSABLE_PACKAGE_TEST: "1"
         run: bash scripts/test-debian-package.sh dist/*-1_amd64.deb dist/*-2_amd64.deb
+
+      - name: Verify installed APT update and user GUI handoff
+        shell: bash
+        env:
+          LG_BUDDY_DISPOSABLE_PACKAGE_TEST: "1"
+        run: |
+          python3 scripts/test-debian-update.py \
+            --archive dist/*.tar.gz --package dist/*-1_amd64.deb \
+            --runtime-fixture updater-fixtures/lg-buddy \
+            --gui-fixture updater-fixtures/lg-buddy-gui
 
   bundle-build:
     runs-on: ubuntu-24.04

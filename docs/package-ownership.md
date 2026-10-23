@@ -2,10 +2,11 @@
 
 This is the common contract for Debian and RPM delivery under
 [#133](https://github.com/Staphylococcus/LG_Buddy/issues/133). The ownership,
-provisioning, binding, installer and updater prework is implemented. Package
-recipes and APT/DNF update installation remain
-[#134](https://github.com/Staphylococcus/LG_Buddy/issues/134) and
-[#135](https://github.com/Staphylococcus/LG_Buddy/issues/135); publication remains
+provisioning, binding, installer and updater prework is implemented. Debian
+package creation and its APT adapter have isolated coverage; real Ubuntu VM
+qualification remains [#134](https://github.com/Staphylococcus/LG_Buddy/issues/134).
+RPM delivery remains [#135](https://github.com/Staphylococcus/LG_Buddy/issues/135);
+publication remains
 [#136](https://github.com/Staphylococcus/LG_Buddy/issues/136). Requirements for
 those deliveries below do not mean package assets already ship.
 
@@ -100,6 +101,7 @@ config locations and their adjacent credentials stay in place.
 | Selected `config.env` and adjacent `tvs/primary/access-token.json` | Config owner through application settings, migration and pairing | Preserve location and owner; never package payload or scriptlet input |
 | User cache/state/runtime locations, including KWin cache and receipts | User's application / provisioner | Maintain only that user's state |
 | `/run/lg_buddy` | Existing tmpfiles rule and runtime | Volatile runtime state with the existing access policy |
+| `/run/lg-buddy-package-updates/` | Privileged APT adapter | Root-private temporary package copy and acquisition lock; never user configuration |
 | `/var/lib` | No new persistent application store is introduced by this contract | Any future machine store needs an explicit layout and owner |
 
 Runtime files under `/run`, user runtime directories and temporary/cache files
@@ -235,15 +237,14 @@ loader proof and fallback details remain in [KWin integration](kwin-integration.
 ## Update ownership and release identity
 
 The implemented updater checks installation ownership before release discovery
-and again after acquisition, before candidate/installer execution. GUI checks
-remain available, but non-bundle installations receive ownership guidance
-instead of an install action. Changed ownership or newly invalid bundle layout
-invalidates a stale bundle offer; uncertainty cannot retain mutation authority.
+and again after acquisition, before candidate/installer execution. Bundles and
+healthy LG Buddy Debian packages share the install action. Other owners receive
+ownership guidance; uncertainty and changed ownership invalidate a stale offer.
 
-| Ownership | Implemented prework | Package-delivery requirement |
+| Ownership | Implemented behavior | Remaining delivery work |
 | --- | --- | --- |
 | `Bundle` | Verified release-bundle installation | Preserve this path for existing bundles and Arch |
-| `Package { Dpkg }` | Refuse self-install; show APT guidance | #134 acquires a verified local `.deb` and delegates installation to APT |
+| `Package { Dpkg }` | Verified local `.deb` acquisition and APT for the healthy `lg-buddy` package | #134 real Ubuntu VM qualification; #136 publication |
 | `Package { Rpm }` | Refuse self-install; show DNF guidance | #135 acquires a verified local `.rpm` and delegates installation to DNF |
 | `Package { Pacman }` | Refuse self-install; show pacman guidance | Externally managed; no pacman delivery in v2 |
 | `Unknown` | Refuse automatic installation | Remains refused, including conflicting/error observations |
@@ -253,6 +254,14 @@ explicit confirmation, verification and installed-app relaunch flow. Package
 managers own dependency resolution and system mutations. A downloadable local
 package does not establish an APT/DNF repository or promise that a normal
 repository upgrade discovers LG Buddy releases.
+
+The [Debian adapter](debian-package.md#integrated-updates) additionally rechecks
+the selected delivery kind after acquisition. Its installed privileged runtime
+revalidates the official release digest, stages only matching bytes under root
+control and invokes APT with fixed arguments and a clean environment. Native
+package state, ownership and both binaries are verified after the transaction.
+The real APT container smoke substitutes HTTP transport and authentication;
+desktop service managers, polkit and reboot still need Ubuntu VM qualification.
 
 ### Common identity tuple
 

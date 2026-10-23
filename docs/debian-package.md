@@ -2,11 +2,12 @@
 
 The local builder produces an `amd64` `.deb` from the verified release bundle,
 following the [package ownership contract](package-ownership.md). Its baseline
-is Ubuntu 24.04. This is the first delivery slice of
-[#134](https://github.com/Staphylococcus/LG_Buddy/issues/134): package assembly
-and isolated lifecycle checks. Published package assets, APT installation in
-`lg-buddy updates install`, and real Ubuntu VM qualification remain pending.
-The current application updater continues to show package-manager guidance.
+is Ubuntu 24.04. Package assembly, isolated lifecycle checks and the APT updater
+adapter are implemented under
+[#134](https://github.com/Staphylococcus/LG_Buddy/issues/134). Real Ubuntu VM
+qualification remains pending. Published package assets remain
+[#136](https://github.com/Staphylococcus/LG_Buddy/issues/136); the adapter requires
+a matching verified `.deb` on the selected release.
 
 ## Build
 
@@ -37,8 +38,35 @@ release. Supported prereleases are `alpha`, `beta` or `rc`, optionally followed
 by `.N` and `.ci` (`beta.2`, `rc.1`, `beta.2.ci`). Other prerelease forms and
 build metadata are refused because their native ordering could disagree with
 SemVer, including letter-only examples such as `alpha.a.1` versus `alpha.aa`.
-Embedded version/channel/commit
-identity remains the upstream identity, independent of the Debian revision.
+Embedded version/channel/commit identity remains the upstream identity,
+independent of the Debian revision. Official updater assets use revision `1`;
+later local packaging revisions are installed manually through APT.
+
+## Integrated updates
+
+`lg-buddy updates install` and the GUI share the saved channel, discovery,
+confirmation and result verification. A healthy `lg-buddy` Debian installation
+acquires `lg-buddy_<native-version>_amd64.deb`; bundles retain their existing
+installer. Other owners, incomplete/held packages, conflicting ownership,
+managed hosts and unsafe/read-only paths refuse automatic native installation.
+
+Acquisition verifies the GitHub asset digest, published checksum, release tag
+commit, native name/version/architecture and both embedded binary identities.
+The package must leave dynamic configuration unowned. Before APT runs, the
+installed runtime's private administrator-authorized entrypoint independently
+checks the release and checksum, then copies the supplied bytes into protected
+temporary storage under `/run/lg-buddy-package-updates`. It never accepts a
+caller-selected package path or command. APT receives that protected file,
+resolves dependencies and owns the transaction; removals, downgrades, held
+package changes and unauthenticated dependencies are refused.
+
+Success verifies the installed native package version, both file owners and
+both binary identities. The GUI restarts through the existing handoff. An
+interactive terminal update in a normal user's graphical session also launches
+the installed GUI. Root/headless terminal updates leave GUI launch to the user.
+An APT error after transaction start reports possible partial installation;
+inspect and repair native package state before retrying. Installing a local
+`.deb` does not create an APT repository or make `apt upgrade` discover releases.
 
 ## Install and retain configuration
 
@@ -93,6 +121,16 @@ launch and removal/purge retention. Current and stale configuration/credential
 fixtures must remain byte-for-byte unchanged by root package operations.
 Running-manager commands are recorded fakes; offline enablement-link removal
 uses real `systemctl`. Real systemd activation, non-root startup conversion,
-desktop behavior and reboot require
-the separate Ubuntu VM qualification. A packaging-revision upgrade does not
-qualify the future updater's newer-upstream-release acquisition path.
+desktop behavior and reboot require the separate Ubuntu VM qualification.
+A packaging-revision upgrade does not
+qualify the updater's newer-upstream-release acquisition path.
+
+`scripts/test-debian-update.py` separately runs the installed application
+through a real APT update and user GUI relaunch. Its `0.0.0` baseline uses the
+existing GNU debug binaries with the debug-only GitHub transport fixture; the
+candidate is the verified release package. The test checks root digest refusal,
+declined confirmation, acquired package replacement and retained data. Only
+HTTP transport and administrator authentication are substituted: a local GitHub
+fixture and a narrowly scoped disposable NOPASSWD sudo rule are used. Release
+builds cannot enable the transport feature. This does not qualify real polkit
+prompts or a running desktop/system service manager.

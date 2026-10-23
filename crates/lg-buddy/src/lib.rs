@@ -11,6 +11,7 @@ pub mod auth;
 pub mod backend;
 pub mod brightness;
 mod command;
+pub mod debian_update;
 pub mod commands;
 pub mod config;
 pub mod diagnostics;

@@ -380,8 +380,10 @@ The installation dialog closes on failure, and **Install update…** offers
 another attempt. If installation succeeded but restarting failed, the row
 identifies the required restart and its action retries restarting only.
 
-This flow requires a compatible mutable release-bundle installation. Use the
-package manager for externally managed installations. Graphical authorization
+This flow supports compatible release bundles and healthy LG Buddy Debian
+packages. The Debian path uses APT and requires a verified `.deb` on the selected
+release; package publication remains under development. Other package owners
+use their package source. Graphical authorization
 requires `pkexec` and a desktop authorization agent.
 
 ### Headless update commands
@@ -401,6 +403,8 @@ lg-buddy updates install
 Review the offered version and type `yes` to download, verify, and install it.
 Your settings and pairing are preserved. Both commands use your saved update
 channel. If the upgrade is refused, follow the reported reason before retrying.
+An APT update in your normal desktop terminal also launches the installed GUI.
+Root/headless terminal updates leave GUI launch to you.
 
 If the installed version predates `v1.4.0-beta.2`, install one updater-capable
 release bundle manually before using `updates install`.

@@ -9,6 +9,18 @@ fn main() -> ExitCode {
     let arguments: Vec<String> = env::args().skip(1).collect();
     if arguments
         .first()
+        .is_some_and(|arg| arg == "apply-debian-update")
+    {
+        return match lg_buddy::debian_update::run(&arguments[1..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("LG Buddy: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if arguments
+        .first()
         .is_some_and(|arg| arg == "installer-preflight")
     {
         return match lg_buddy::upgrade_preflight::installer::run(&arguments[1..]) {

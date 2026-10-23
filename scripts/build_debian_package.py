@@ -152,7 +152,7 @@ def dependencies(root: Path, work: Path) -> str:
     if not generated:
         raise PackageError("GTK executable has no native library dependencies")
     return ", ".join((generated, "libgtk-4-1 (>= 4.14)", "libadwaita-1-0 (>= 1.5)",
-                      "systemd", "init-system-helpers", "polkitd", "pkexec"))
+                      "apt", "systemd", "init-system-helpers", "polkitd", "pkexec"))
 
 
 def build(archive: Path, output_dir: Path, epoch: int, revision: int = 1) -> Path:

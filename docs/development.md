@@ -138,8 +138,8 @@ For package-managed layouts, first-run activation and ownership boundaries,
 see the [package ownership contract](package-ownership.md). Debian/RPM delivery
 builds on that contract; the installer below remains the release-bundle path.
 The [Debian package development guide](debian-package.md) covers the local
-package builder and isolated lifecycle checks; APT updater integration and VM
-qualification remain separate work under #134.
+package builder, APT updater and isolated lifecycle checks. Real Ubuntu VM
+qualification remains separate work under #134.
 
 `install.sh` is installer-only. It does not build the runtime or GUI.
 
@@ -177,17 +177,17 @@ are reused without changing their modes.
 ## Validation
 
 The updater uses the same fallible package database as installer preflight.
-Only an unowned executable in a recognized release-bundle layout can use
-`updates install`; APT-, DNF- and pacman-managed installations receive guidance
-to their package source, and unverifiable ownership refuses automatic installation.
+Recognized bundles use the bundle installer. A healthy `lg-buddy` Debian package
+uses verified local-package acquisition and APT; DNF/pacman installations receive
+package-source guidance, and unverifiable ownership refuses automatic installation.
 Ownership is checked before release discovery and again after acquisition,
 before candidate checks or installer execution. GUI update checks remain
-available and show this restriction instead of an install action.
+available; supported delivery owners share the install action.
 
-APT/DNF package installation from the integrated update journey is planned in
-issues #134/#135. Downloadable release packages alone do not configure an update
-repository; the current guidance does not promise `apt upgrade` or `dnf upgrade`
-will discover LG Buddy updates.
+APT adapter details and qualification limits are in the Debian guide; DNF
+delivery remains #135 and package publication remains #136. Downloadable release
+packages do not configure a repository or promise that `apt upgrade` or
+`dnf upgrade` discovers LG Buddy releases.
 
 Useful checks during development:
 
