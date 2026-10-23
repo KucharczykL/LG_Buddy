@@ -1544,7 +1544,7 @@ fn updater_renderer_scenarios(application: &adw::Application) {
             Ok(UpdateCheckReport {
                 installation_ownership:
                     lg_buddy::upgrade_preflight::InstallationOwnership::Package {
-                        family: lg_buddy::upgrade_preflight::PackageFamily::Dpkg,
+                        family: lg_buddy::upgrade_preflight::PackageFamily::Rpm,
                     },
                 installed_version: "1.6.0".into(),
                 channel: UpdateChannel::Stable,
@@ -1555,7 +1555,7 @@ fn updater_renderer_scenarios(application: &adw::Application) {
         .unwrap();
     view.render(model.presentation());
     assert_eq!(row.title(), "Update available");
-    assert!(row.subtitle().unwrap().contains("APT"));
+    assert!(row.subtitle().unwrap().contains("DNF"));
     assert_eq!(action.label().as_deref(), Some("Check for updates"));
     assert!(action.is_sensitive());
     assert!(!view.updater.presented.get());
@@ -1572,7 +1572,10 @@ fn updater_renderer_scenarios(application: &adw::Application) {
         .complete_update_check(
             checking.update_check_operation().unwrap(),
             Ok(UpdateCheckReport {
-                installation_ownership: lg_buddy::upgrade_preflight::InstallationOwnership::Bundle,
+                installation_ownership:
+                    lg_buddy::upgrade_preflight::InstallationOwnership::Package {
+                        family: lg_buddy::upgrade_preflight::PackageFamily::Dpkg,
+                    },
                 installed_version: "1.6.0".into(),
                 channel: UpdateChannel::Stable,
                 update_available: true,
