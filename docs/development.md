@@ -11,7 +11,7 @@ Compiling the Rust runtime requires:
 
 Compiling and testing the GTK frontend additionally requires:
 
-- GTK 4.10 or newer development files
+- GTK 4.14 or newer development files
 - libadwaita 1.5 or newer development files
 - `pkg-config`
 - `glib-compile-resources` (provided by the GLib development tools)
@@ -133,6 +133,10 @@ The resulting binary will be at:
 ```
 
 ## Install a Locally Built Binary
+
+For package-managed layouts, first-run activation and ownership boundaries,
+see the [package ownership contract](package-ownership.md). Debian/RPM delivery
+builds on that contract; the installer below remains the release-bundle path.
 
 `install.sh` is installer-only. It does not build the runtime or GUI.
 

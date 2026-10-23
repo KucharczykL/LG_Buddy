@@ -68,7 +68,7 @@ Plugin files use a per-user, content-addressed name in the system Qt plugin
 directory. Installation uses the existing privilege route, verifies the copied
 bytes and shares the bundle installer's ownership/mount guard. These files are
 the named host-integration-artifact exception to the
-[package ownership contract](https://github.com/Staphylococcus/LG_Buddy/issues/133):
+[package ownership contract](package-ownership.md#kwin-artifacts):
 KWin's loader requires them under `/usr/lib*/qt6/plugins/kwin/plugins`. Both
 installation and removal refuse package-owned files, conflicting ownership,
 unavailable package-database answers, read-only mounts and immutable/declarative

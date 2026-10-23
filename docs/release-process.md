@@ -11,6 +11,11 @@ The intended ancestry is `main <= prerelease <= dev`. Ordinary changes merge
 into `dev`. An official release requires a promotion PR whose head is the
 same-repository `dev` branch and whose base is `main` or `prerelease`.
 
+The [package ownership contract](package-ownership.md) defines the common
+Debian/RPM layout, activation, update identity and retention requirements.
+Package delivery and publication remain tracked in #134/#135/#136; the release
+workflow described here currently publishes the release bundle.
+
 ## Promotion contract
 
 The promotion PR is the code and release-identity review surface. Required checks
