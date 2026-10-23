@@ -120,6 +120,12 @@ The smoke checks conflicts, install, a local package upgrade, reinstall,
 ownership/modes/checksums, binary identities, runtime linkage, installed GTK
 launch and removal/purge retention. Current and stale configuration/credential
 fixtures must remain byte-for-byte unchanged by root package operations.
+After the upgrade/reinstall checks, the smoke starts the installed monitor as
+the stale config's non-root owner without a desktop/session bus. Only the two
+retired selectors may change; preferences, file ownership/mode and credentials
+must remain intact. Root lifecycle and foreground TV commands must refuse that
+stale input without converting it. The converted profile is then retained
+through removal and purge.
 Running-manager commands are recorded fakes; offline enablement-link removal
 uses real `systemctl`. Real systemd activation, non-root startup conversion,
 desktop behavior and reboot are covered separately by the

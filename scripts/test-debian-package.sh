@@ -90,13 +90,28 @@ grep -Fxq 'legacy hook sentinel' /usr/lib/systemd/system-sleep/LG_Buddy_sleep_ho
 rm /usr/lib/systemd/system-sleep/LG_Buddy_sleep_hook
 
 # Root installation must leave both current and stale user data untouched.
+useradd --create-home --shell /bin/bash lgdeb-migrate
 mkdir -p "$work/current/tvs/primary" "$work/stale/tvs/primary"
 printf '%s\n' 'tvs_primary_platform=lg_webos' '# retained current settings' >"$work/current/config.env"
-printf '%s\n' 'tvs_primary_platform=bscpylgtv' '# retained stale settings' >"$work/stale/config.env"
+cat >"$work/stale/config.env" <<'EOF'
+# retained stale settings
+tvs_primary_ip=127.0.0.2
+tvs_primary_mac=02:00:00:00:01:34
+tvs_primary_input=HDMI_3
+tvs_primary_platform=bscpylgtv
+screen_backend=swayidle
+screen_idle_blank=disabled
+screen_idle_timeout=37
+screen_restore_policy=aggressive
+updates_channel=prerelease
+updates_auto_check=disabled
+system_sleep_wake_policy=disabled
+EOF
 printf '%s\n' '{"access_token":"retained-current-token"}' >"$work/current/tvs/primary/access-token.json"
 printf '%s\n' '{"access_token":"retained-stale-token"}' >"$work/stale/tvs/primary/access-token.json"
 chown -R 1000:1000 "$work/current"
-chown -R 1001:1001 "$work/stale"
+chown -R "$(id -u lgdeb-migrate):$(id -g lgdeb-migrate)" "$work/stale"
+chmod 640 "$work/stale/config.env"
 chmod 600 "$work/"{current,stale}/tvs/primary/access-token.json
 mkdir -p /etc/lg-buddy /etc/systemd/system/LG_Buddy_lifecycle.service.d
 printf '%s\n' "$work/current/config.env" >/etc/lg-buddy/config-path
@@ -144,6 +159,74 @@ install_package "$candidate"
 check_installed "$candidate"
 apt-get install -y --no-install-recommends --reinstall "$candidate" >"$work/reinstall.log" 2>&1
 check_installed "$candidate"
+
+# Exercise the installed executable, without a desktop, session bus or TV.
+# Root package operations above preserved the complete stale input; only its
+# owner's screen-daemon entrypoint may now convert it.
+python3 - "$work/stale/config.env" "$work/migration-monitor.log" <<'PY'
+import os, pathlib, pwd, signal, stat, subprocess, sys, time
+
+config, log = map(pathlib.Path, sys.argv[1:])
+user = pwd.getpwnam("lgdeb-migrate")
+token = config.parent / "tvs/primary/access-token.json"
+runtime = "/usr/bin/lg-buddy"
+
+def snapshot(path):
+    metadata = path.stat()
+    return (path.read_bytes(), metadata.st_uid, metadata.st_gid,
+            stat.S_IMODE(metadata.st_mode))
+
+before, credential = snapshot(config), snapshot(token)
+assert user.pw_uid != 0 and before[1:] == (user.pw_uid, user.pw_gid, 0o640)
+environment = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "HOME": "/root",
+               "LG_BUDDY_CONFIG": str(config)}
+as_owner = ["/usr/sbin/runuser", "-u", user.pw_name, "--", "/usr/bin/env", "-i",
+            "PATH=/usr/sbin:/usr/bin:/sbin:/bin", f"HOME={user.pw_dir}",
+            f"LG_BUDDY_CONFIG={config}"]
+# Lifecycle opens its bus before loading config; an empty private bus reaches
+# the real stale-config guard without supplying logind or a system manager.
+root_guard = ["/usr/bin/dbus-run-session", "--", "/bin/sh", "-c",
+              'export DBUS_SYSTEM_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS"; '
+              'exec /usr/bin/lg-buddy lifecycle']
+for command in (root_guard, [*as_owner, runtime, "volume"]):
+    refused = subprocess.run(command, env=environment, capture_output=True, timeout=15)
+    assert refused.returncode != 0 and b"v2 migration required" in refused.stderr, refused
+    assert snapshot(config) == before and snapshot(token) == credential
+
+expected = before[0].replace(b"tvs_primary_platform=bscpylgtv",
+                             b"tvs_primary_platform=lg_webos").replace(
+                                 b"screen_backend=swayidle", b"screen_backend=auto")
+with log.open("wb") as output:
+    monitor = subprocess.Popen([*as_owner, runtime, "monitor"], env=environment,
+                               stdout=output, stderr=subprocess.STDOUT,
+                               start_new_session=True)
+    try:
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            if config.read_bytes() == expected or monitor.poll() is not None:
+                break
+            time.sleep(0.1)
+    finally:
+        if monitor.poll() is None:
+            try:
+                os.killpg(monitor.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                monitor.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(monitor.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                monitor.wait(timeout=3)
+
+assert snapshot(config) == (expected, *before[1:]), log.read_text(errors="replace")
+assert snapshot(token) == credential
+print("Installed startup migration passed: root/foreground refusal, non-root conversion, retained preferences and credentials.")
+PY
+# The deliberate user conversion is now the retention baseline for removal.
+snapshot >"$work/before"
 
 useradd --create-home --shell /bin/bash lgdeb-gui
 runuser -u lgdeb-gui -- dbus-run-session -- xvfb-run -a \

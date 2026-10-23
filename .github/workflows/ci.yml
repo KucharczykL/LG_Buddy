@@ -183,7 +183,7 @@ jobs:
           python3 scripts/build_debian_package.py --archive "${archive[0]}" --source-date-epoch "$epoch" --output-dir reproducible --revision 2
           cmp dist/*-2_amd64.deb reproducible/*-2_amd64.deb
 
-      - name: Verify native package lifecycle
+      - name: Verify native package lifecycle and startup migration
         shell: bash
         env:
           LG_BUDDY_DISPOSABLE_PACKAGE_TEST: "1"
