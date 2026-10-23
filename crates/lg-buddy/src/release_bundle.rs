@@ -20,6 +20,8 @@ use url::Url;
 
 use crate::updates::{ReleaseAsset, ReleaseInfo, UpdateChannel};
 
+pub(crate) mod debian;
+
 const REPOSITORY_OWNER: &str = "Staphylococcus";
 const REPOSITORY_NAME: &str = "LG_Buddy";
 const GITHUB_API_ROOT: &str = "https://api.github.com";
@@ -351,6 +353,19 @@ fn resolve_release_with<S: GitHubSource>(
     release: &ReleaseInfo,
     source: &S,
 ) -> Result<ResolvedRelease, BundleAcquisitionError> {
+    let fresh_release = fresh_release_with(release, source)?;
+    select_release_assets(&fresh_release)?;
+    let identity = resolve_tag_identity(&fresh_release, source)?;
+    Ok(ResolvedRelease {
+        release: fresh_release,
+        identity,
+    })
+}
+
+fn fresh_release_with<S: GitHubSource>(
+    release: &ReleaseInfo,
+    source: &S,
+) -> Result<ReleaseInfo, BundleAcquisitionError> {
     validate_release_identity(release)?;
     let fresh_release = source.fetch_release_by_tag(release)?;
     validate_release_identity(&fresh_release)?;
@@ -362,20 +377,22 @@ fn resolve_release_with<S: GitHubSource>(
             "fresh release-by-tag metadata disagrees with the selected release".to_string(),
         ));
     }
-    select_release_assets(&fresh_release)?;
-    let commit = source.resolve_tag_commit(fresh_release.tag_name())?;
+    Ok(fresh_release)
+}
+
+fn resolve_tag_identity<S: GitHubSource>(
+    release: &ReleaseInfo,
+    source: &S,
+) -> Result<ReleaseIdentity, BundleAcquisitionError> {
+    let commit = source.resolve_tag_commit(release.tag_name())?;
     validate_commit_sha(&commit).map_err(BundleAcquisitionError::TagResolution)?;
-    let identity = ReleaseIdentity::from_parts(
-        fresh_release.tag_name(),
-        fresh_release.version().clone(),
-        fresh_release.channel(),
+    Ok(ReleaseIdentity::from_parts(
+        release.tag_name(),
+        release.version().clone(),
+        release.channel(),
         RELEASE_TARGET,
         commit,
-    );
-    Ok(ResolvedRelease {
-        release: fresh_release,
-        identity,
-    })
+    ))
 }
 
 fn validate_release_identity(release: &ReleaseInfo) -> Result<(), BundleAcquisitionError> {
@@ -416,6 +433,13 @@ fn select_release_assets(
     release: &ReleaseInfo,
 ) -> Result<SelectedAssets<'_>, BundleAcquisitionError> {
     let archive_name = format!("lg-buddy-{}-{RELEASE_TARGET}.tar.gz", release.version());
+    select_named_release_assets(release, &archive_name)
+}
+
+fn select_named_release_assets<'a>(
+    release: &'a ReleaseInfo,
+    archive_name: &str,
+) -> Result<SelectedAssets<'a>, BundleAcquisitionError> {
     let archives: Vec<_> = release
         .assets()
         .iter()
@@ -427,7 +451,7 @@ fn select_release_assets(
         .filter(|asset| asset.name() == CHECKSUM_ASSET_NAME)
         .collect();
 
-    let archive = exactly_one_asset(&archive_name, archives)?;
+    let archive = exactly_one_asset(archive_name, archives)?;
     let checksum = exactly_one_asset(CHECKSUM_ASSET_NAME, checksums)?;
     if archive.id() == checksum.id() {
         return Err(BundleAcquisitionError::ReleaseMetadata(
@@ -2097,6 +2121,14 @@ fn read_embedded_binary_identity(
             "bundled binary exceeds the file-size limit".to_string(),
         ));
     }
+    parse_embedded_binary_identity(&bytes, target, release_tag)
+}
+
+fn parse_embedded_binary_identity(
+    bytes: &[u8],
+    target: &str,
+    release_tag: &str,
+) -> Result<ReleaseIdentity, BundleAcquisitionError> {
     if bytes.get(..4) != Some(b"\x7fELF")
         || bytes.get(4) != Some(&2)
         || bytes.get(5) != Some(&1)
@@ -2107,7 +2139,7 @@ fn read_embedded_binary_identity(
         ));
     }
 
-    let record = embedded_identity_section(&bytes)?;
+    let record = embedded_identity_section(bytes)?;
     if !record.starts_with(EMBEDDED_IDENTITY_PREFIX) || !record.ends_with(EMBEDDED_IDENTITY_SUFFIX)
     {
         return Err(BundleAcquisitionError::Binary(
@@ -2281,7 +2313,7 @@ mod tests {
 
     static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-    fn temp_dir(label: &str) -> PathBuf {
+    pub(super) fn temp_dir(label: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
             "lg-buddy-release-bundle-{label}-{}-{}",
             process::id(),
@@ -2291,7 +2323,7 @@ mod tests {
         path
     }
 
-    fn stable_identity() -> ReleaseIdentity {
+    pub(super) fn stable_identity() -> ReleaseIdentity {
         ReleaseIdentity {
             release_tag: "v1.4.0".to_string(),
             version: Version::parse("1.4.0").expect("version"),
@@ -2331,7 +2363,7 @@ mod tests {
         format!("{:x}", hasher.finalize())
     }
 
-    fn release_asset(id: u64, name: &str, bytes: &[u8]) -> ReleaseAsset {
+    pub(super) fn release_asset(id: u64, name: &str, bytes: &[u8]) -> ReleaseAsset {
         let tag = "v1.4.0";
         ReleaseAsset::from_github(
             id,
@@ -2346,7 +2378,7 @@ mod tests {
         )
     }
 
-    fn release_info(assets: Vec<ReleaseAsset>) -> ReleaseInfo {
+    pub(super) fn release_info(assets: Vec<ReleaseAsset>) -> ReleaseInfo {
         ReleaseInfo::from_github(
             Version::parse("1.4.0").expect("version"),
             UpdateChannel::Stable,
@@ -2564,7 +2596,7 @@ mod tests {
         path
     }
 
-    fn embedded_identity_binary(identity: &ReleaseIdentity) -> Vec<u8> {
+    pub(super) fn embedded_identity_binary(identity: &ReleaseIdentity) -> Vec<u8> {
         let mut bytes = vec![0_u8; 64];
         bytes[..4].copy_from_slice(b"\x7fELF");
         bytes[4] = 2;
@@ -2609,10 +2641,10 @@ mod tests {
         bytes
     }
 
-    struct FakeSource {
-        fresh_release: ReleaseInfo,
-        payloads: HashMap<u64, Vec<u8>>,
-        commit: String,
+    pub(super) struct FakeSource {
+        pub(super) fresh_release: ReleaseInfo,
+        pub(super) payloads: HashMap<u64, Vec<u8>>,
+        pub(super) commit: String,
     }
 
     impl GitHubSource for FakeSource {

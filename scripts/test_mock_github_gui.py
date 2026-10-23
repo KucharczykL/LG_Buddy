@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import io
+import importlib.util
+import hashlib
 import json
 import subprocess
 import sys
@@ -108,6 +110,22 @@ class MockGitHubGuiTests(unittest.TestCase):
             if 300 <= error.code < 400:
                 return error
             raise
+
+    def test_debian_fixture_advertises_the_package_and_its_matching_checksum(self) -> None:
+        spec = importlib.util.spec_from_file_location("mock_github_gui", SERVER)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        package = Path(self.directory.name) / "lg-buddy_1.7.0~beta.1-1_amd64.deb"
+        content = b"native package fixture bytes"
+        package.write_bytes(content)
+        fixture = module.Fixture(self.archive, self.state, None, "0.0.0", package)
+        metadata = module.release_json(fixture.candidate)
+        asset = metadata["assets"][0]
+        self.assertEqual(asset["name"], package.name)
+        self.assertEqual(asset["digest"], "sha256:" + hashlib.sha256(content).hexdigest())
+        self.assertEqual(fixture.candidate["archive"], content)
+        self.assertEqual(fixture.candidate["checksums"], f"{hashlib.sha256(content).hexdigest()}  {package.name}\n".encode())
+        self.assertEqual(fixture.stable["archive"], self.archive_bytes)
 
     def test_prerelease_metadata_tag_peeling_and_asset_bytes(self) -> None:
         with self.get(

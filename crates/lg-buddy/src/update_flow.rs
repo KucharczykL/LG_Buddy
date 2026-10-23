@@ -13,7 +13,7 @@ use crate::update_install::{
     PreparedUpdateInstall, UpdateInstallCancellation, UpdateInstallError, UpdateInstallStage,
 };
 use crate::updates::UpdateChannel;
-use crate::upgrade_preflight::InstallationOwnership;
+use crate::upgrade_preflight::{InstallationOwnership, PackageFamily};
 
 #[derive(Debug, Clone)]
 pub enum UpdateInstallTask {
@@ -180,6 +180,12 @@ fn update_install_outcome(
                 failure: Some(error.into()),
             })
         }
+        Err(
+            error @ (UpdateInstallError::PackageState(_) | UpdateInstallError::OwnershipChanged(_)),
+        ) => Ok(UpdateInstallOutcome::Restricted {
+            ownership: InstallationOwnership::Unknown,
+            failure: Some(error.into()),
+        }),
         result => result.map_err(Into::into),
     }
 }
@@ -225,9 +231,16 @@ impl UpdateInstallApplication {
         let offered = report.is_some_and(|report| report.update_available);
         self.presentation.check_channel_matches =
             offered.then(|| report.is_some_and(|report| Some(report.channel) == channel));
-        let bundle = report
-            .is_some_and(|report| report.installation_ownership == InstallationOwnership::Bundle);
-        self.presentation.action = (offered && bundle).then(|| {
+        let supported = report.is_some_and(|report| {
+            matches!(
+                report.installation_ownership,
+                InstallationOwnership::Bundle
+                    | InstallationOwnership::Package {
+                        family: PackageFamily::Dpkg
+                    }
+            )
+        });
+        self.presentation.action = (offered && supported).then(|| {
             SettingsAction::new(
                 if self.presentation.error.is_some() {
                     "Retry update"

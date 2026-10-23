@@ -67,7 +67,7 @@ impl UpdaterPresentation {
         }
         if !active {
             if let Some(guidance) = check.result().and_then(|report| {
-                crate::update_install::bundle_update_guidance(report.installation_ownership)
+                crate::update_install::update_install_guidance(report.installation_ownership)
             }) {
                 row.description = format!("{} {}", row.description, guidance);
             }
@@ -181,12 +181,6 @@ mod tests {
         for (ownership, guidance) in [
             (
                 InstallationOwnership::Package {
-                    family: PackageFamily::Dpkg,
-                },
-                "APT",
-            ),
-            (
-                InstallationOwnership::Package {
                     family: PackageFamily::Rpm,
                 },
                 "DNF",
@@ -218,6 +212,24 @@ mod tests {
                 assert!(app.handle_intent(SettingsIntent::CheckForUpdates).is_some());
             }
         }
+    }
+
+    #[test]
+    fn healthy_apt_installations_offer_the_shared_install_flow() {
+        use crate::upgrade_preflight::{InstallationOwnership, PackageFamily};
+        let mut app = application("stable");
+        let mut result = report(UpdateChannel::Stable, true);
+        result.installation_ownership = InstallationOwnership::Package {
+            family: PackageFamily::Dpkg,
+        };
+        complete_check(&mut app, Ok(result));
+        let row = app.presentation().updater();
+        assert_eq!(row.action().intent(), SettingsIntent::PrepareUpdateInstall);
+        assert!(row.action().enabled());
+        assert!(!row.description().contains("cannot install"));
+        assert!(app
+            .handle_intent(SettingsIntent::PrepareUpdateInstall)
+            .is_some());
     }
 
     #[test]

@@ -119,7 +119,8 @@ def body(value: object) -> bytes:
 
 class Fixture:
     def __init__(
-        self, archive: Path, state: Path, request_log: Path | None, current: str
+        self, archive: Path, state: Path, request_log: Path | None, current: str,
+        package: Path | None = None,
     ):
         facts = archive_facts(archive)
         self.state, self.request_log, self.lock = state, request_log, threading.Lock()
@@ -131,6 +132,12 @@ class Fixture:
         self.candidate = make_release(
             facts, str(facts["version"]), str(facts["channel"]), 1200
         )
+        if package is not None:
+            data = package.read_bytes()
+            self.candidate.update({
+                "name": package.name, "archive": data,
+                "checksums": f"{sha256(data)}  {package.name}\n".encode("ascii"),
+            })
         self.releases = (self.current, self.stable, self.candidate)
 
     def selected(self, channel: str, mode: str) -> dict[str, object]:
@@ -293,13 +300,14 @@ def atomic_write(path: Path, data: bytes) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--archive", type=Path, required=True)
+    parser.add_argument("--package", type=Path)
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--ready", type=Path, required=True)
     parser.add_argument("--requests", type=Path)
     parser.add_argument("--current-version", default="0.0.0")
     args = parser.parse_args()
     try:
-        fixture = Fixture(args.archive, args.state, args.requests, args.current_version)
+        fixture = Fixture(args.archive, args.state, args.requests, args.current_version, args.package)
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         server.fixture = fixture  # type: ignore[attr-defined]
         host, port = server.server_address

@@ -189,7 +189,7 @@ impl<F: FilesystemFacts> Guard<'_, F> {
     }
 }
 
-fn mutable_host(filesystem: &impl FilesystemFacts, root: &Path) -> io::Result<()> {
+pub(crate) fn mutable_host(filesystem: &impl FilesystemFacts, root: &Path) -> io::Result<()> {
     absolute(root)?;
     for marker in ["etc/NIXOS", "run/ostree-booted"] {
         let marker = root.join(marker);
