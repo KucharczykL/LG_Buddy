@@ -9,8 +9,10 @@ package creation and its APT adapter have isolated coverage and
 RPM package creation and its DNF5 adapter have isolated coverage and
 [Fedora VM qualification](rpm-vm-validation.md) under
 [#135](https://github.com/Staphylococcus/LG_Buddy/issues/135).
-Public package assets and update canaries remain
-[#136](https://github.com/Staphylococcus/LG_Buddy/issues/136).
+The [release train](release-process.md#native-release-assets) integrates public
+package assets and update canaries under
+[#136](https://github.com/Staphylococcus/LG_Buddy/issues/136); production
+qualification requires the recorded published update journeys.
 
 ## Ownership invariant
 
@@ -189,8 +191,8 @@ reruns use the same binding transition:
 This moves selection authority, not user settings. Payload installation leaves
 supported stale 1.x contents for the installed application's existing startup
 conversion under [#137](https://github.com/Staphylococcus/LG_Buddy/issues/137).
-The [user screen daemon's startup boundary](../crates/lg-buddy/src/startup.rs)
-converts as the config's non-root owner before loading it. Conversion is local,
+The [GUI and user screen daemon's startup boundary](../crates/lg-buddy/src/startup.rs)
+converts as the config's non-root owner before config-dependent workers start. Conversion is local,
 preserves preferences/comments/credentials, and does not require acknowledgement,
 a migration screen, TV access or desktop readiness. The root lifecycle daemon
 does not convert; its current-config guard fails until the owner daemon publishes
@@ -247,8 +249,8 @@ offer.
 | Ownership | Implemented behavior | Remaining delivery work |
 | --- | --- | --- |
 | `Bundle` | Verified release-bundle installation | Preserve this path for existing bundles and Arch |
-| `Package { Dpkg }` | Verified local `.deb` acquisition and APT for the healthy `lg-buddy` package | #136 publication and public update canaries |
-| `Package { Rpm }` | Verified local `.rpm` acquisition and DNF5 for the healthy `lg-buddy` package | #136 publication and public update canaries |
+| `Package { Dpkg }` | Verified local `.deb` acquisition and APT for the healthy `lg-buddy` package | #136 published update qualification |
+| `Package { Rpm }` | Verified local `.rpm` acquisition and DNF5 for the healthy `lg-buddy` package | #136 published update qualification |
 | `Package { Pacman }` | Refuse self-install; show pacman guidance | Externally managed; no pacman delivery in v2 |
 | `Unknown` | Refuse automatic installation | Remains refused, including conflicting/error observations |
 
@@ -395,4 +397,4 @@ canaries, while retaining bundle/Arch and historical bundle-upgrade coverage.
 Those delivery/real-host results must be recorded separately from prework
 fixture success. The [Ubuntu VM record](debian-vm-validation.md) and
 [Fedora VM record](rpm-vm-validation.md) document the Debian and RPM results.
-Public package assets and update canaries remain #136.
+Public package update qualification is recorded separately under #136.

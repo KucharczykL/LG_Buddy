@@ -188,7 +188,8 @@ before candidate checks or installer execution. GUI update checks remain
 available; supported delivery owners share the install action.
 
 Native adapter details and qualification limits are in the Debian and RPM
-guides; package publication remains #136. Downloadable release
+guides; [release publication](release-process.md#native-release-assets) integrates
+both packages under #136. Downloadable release
 packages do not configure a repository or promise that `apt upgrade` or
 `dnf upgrade` discovers LG Buddy releases.
 
@@ -214,11 +215,13 @@ smoke keeps the desktop entry, runtime, and GUI together.
 
 PR CI runs verification and the KWin checks first. Verification builds GUI
 journey fixtures using its existing GNU debug dependency graph; the bundle job
-builds only the optimized runtime and GUI. Ubuntu runs the release-bundle, installed
-GUI, and cross-version upgrade suites in separate matrix jobs, each with a
+builds only the optimized runtime and GUI. Ubuntu runs the release-bundle,
+installed GUI, historical upgrade and v1.8 startup-migration suites in separate
+matrix jobs, each with a
 20-minute limit. Those jobs and Fedora/Arch checks consume the same artifacts
 in parallel. The required `bundle-smoke-test` check passes only when artifact
-production, every Ubuntu smoke suite and both native package jobs succeed;
+production, every Ubuntu smoke suite, both native package jobs and complete
+release-asset assembly succeed;
 failures, timeouts, and skipped
 jobs fail the check.
 
@@ -357,10 +360,15 @@ with:
 python3 scripts/test_publish_release_assets.py
 ```
 
-Dry-run the GitHub release draft-staging step with:
+After building both native packages from the same release bundle on their
+supported baselines, generate and verify the complete asset set on Fedora 43
+with `dpkg`, `rpm` and Python installed. Supply the exact binary source commit
+and a supported release version; the helper refuses mismatched identities.
+The publisher dry run performs these checks without writing to GitHub:
 
 ```bash
-GH_RELEASE_DRY_RUN=1 ./scripts/publish-release-assets.sh stage-draft --dist-dir ./dist --tag v<version>
+python3 scripts/release_assets.py --dist-dir ./dist --tag "v$RELEASE_VERSION" --commit "$RELEASE_COMMIT" --write-checksums
+GH_RELEASE_DRY_RUN=1 ./scripts/publish-release-assets.sh stage-draft --dist-dir ./dist --tag "v$RELEASE_VERSION" --commit "$RELEASE_COMMIT"
 ```
 
 Official releases are created only through a reviewed `dev` promotion PR. For

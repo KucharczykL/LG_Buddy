@@ -60,19 +60,13 @@ esac
     exit 1
 }
 
-mapfile -t ARCHIVES < <(find "$DIST_DIR" -maxdepth 1 -type f -name '*.tar.gz' | sort)
-[ "${#ARCHIVES[@]}" -gt 0 ] || {
-    echo "No release archives found in $DIST_DIR"
+[ -n "$EXPECTED_COMMIT" ] || {
+    echo "Release commit must be provided via --commit."
     exit 1
 }
-
-CHECKSUM_FILE="$DIST_DIR/sha256sums.txt"
-[ -f "$CHECKSUM_FILE" ] || {
-    echo "Checksum file not found: $CHECKSUM_FILE"
-    exit 1
-}
-
-(cd "$DIST_DIR" && sha256sum --strict -c "$(basename "$CHECKSUM_FILE")")
+ASSET_LIST="$(python3 "$SCRIPT_DIR/release_assets.py" \
+    --dist-dir "$DIST_DIR" --tag "$TAG" --commit "$EXPECTED_COMMIT" --list-assets)"
+mapfile -t EXPECTED_ASSETS <<< "$ASSET_LIST"
 
 VERSION="${TAG#v}"
 [ -n "$VERSION" ] || {
@@ -83,42 +77,20 @@ VERSION="${TAG#v}"
 TITLE="LG Buddy ${VERSION}"
 PLACEHOLDER_NOTES="Release notes pending maintainer review."
 RELEASE_FLAGS=()
-EXPECTED_CHANNEL="stable"
 
 if [[ "$VERSION" == *-* ]]; then
     RELEASE_FLAGS+=(--prerelease)
-    EXPECTED_CHANNEL="prerelease"
 fi
-
-for archive in "${ARCHIVES[@]}"; do
-    manifest_expectations=(
-        --expected-release-tag "$TAG"
-        --expected-version "$VERSION"
-        --expected-channel "$EXPECTED_CHANNEL"
-    )
-    if [ -n "$EXPECTED_COMMIT" ]; then
-        manifest_expectations+=(--expected-commit "$EXPECTED_COMMIT")
-    fi
-    python3 "$SCRIPT_DIR/release_bundle_manifest.py" validate \
-        --archive "$archive" \
-        "${manifest_expectations[@]}"
-done
 
 if [ "$DRY_RUN" = "1" ]; then
     echo "Dry run: would run $MODE for tag $TAG"
-    printf 'Archive: %s\n' "${ARCHIVES[@]}"
-    echo "Checksum file: $CHECKSUM_FILE"
+    printf 'Asset: %s\n' "${EXPECTED_ASSETS[@]}"
     echo "Title: $TITLE"
     if [ "${#RELEASE_FLAGS[@]}" -gt 0 ]; then
         echo "Release flags: ${RELEASE_FLAGS[*]}"
     fi
     exit 0
 fi
-
-[ -n "$EXPECTED_COMMIT" ] || {
-    echo "Release commit must be provided via --commit."
-    exit 1
-}
 
 TAG_COMMIT="$(git rev-list -n 1 "$TAG" 2>/dev/null || true)"
 [ "$TAG_COMMIT" = "$EXPECTED_COMMIT" ] || {
@@ -165,7 +137,6 @@ if [ "$MODE" = "stage-draft" ] && [ "$RELEASE_EXISTS" = "false" ]; then
     RELEASE_EXISTS="true"
 fi
 
-EXPECTED_ASSETS=("${ARCHIVES[@]}" "$CHECKSUM_FILE")
 EXPECTED_ASSET_NAMES=()
 
 asset_name_is_expected() {
