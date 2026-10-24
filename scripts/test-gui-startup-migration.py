@@ -96,7 +96,8 @@ def main():
                     # the same ordinary setup state for converted and current
                     # input, rather than mistaking any accessible window for
                     # readiness or fabricating a successful setup assessment.
-                    if {'Setup required', 'Complete setup'} <= labels:
+                    if {'Setup required', 'Complete setup',
+                        "Setup state unavailable: Start or restart LG Buddy's session service, then retry setup."} <= labels:
                         break
                     time.sleep(.1)
                 else:
