@@ -25,6 +25,22 @@ def release(version, *, native=True, draft=False):
 
 
 class CanaryTests(unittest.TestCase):
+    def test_installed_verification_refuses_successful_commands_with_discrepancies(self):
+        for family in ('debian', 'rpm'):
+            for report in ('missing /usr/share/doc/lg-buddy/release-manifest.json',
+                           '??5?????? /usr/bin/lg-buddy'):
+                with self.subTest(family=family, report=report), patch.object(
+                    canary, 'checked', side_effect=['2.0.0~beta.1-1', report]
+                ), self.assertRaisesRegex(AssetError, 'discrepancies'):
+                    canary.verify_installed_package(family)
+
+    def test_installed_verification_accepts_clean_native_payload(self):
+        for family in ('debian', 'rpm'):
+            with self.subTest(family=family), patch.object(
+                canary, 'checked', side_effect=['2.0.0~beta.1-1', '']
+            ):
+                self.assertEqual(canary.verify_installed_package(family), '2.0.0~beta.1-1')
+
     def public_fixture(self, root):
         remote = root / 'remote'
         remote.mkdir()

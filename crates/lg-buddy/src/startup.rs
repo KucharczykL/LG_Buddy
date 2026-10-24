@@ -1,7 +1,7 @@
-//! Startup conversion boundary for the user-owned screen daemon.
+//! Startup conversion boundary for the GUI and user-owned screen daemon.
 //!
 //! Resolves the config path and converts a supported stale 1.x / bscpylgtv
-//! config before the daemon reads it.
+//! config before application workers read it.
 //!
 //! The screen daemon (`LG_Buddy_screen.service`) runs as the config's owner.
 //! The lifecycle daemon (`LG_Buddy_lifecycle.service`) runs as root, and
@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use crate::migration::automatic::migrate_config;
 use crate::RunError;
 
-/// Resolve the config path, run automatic migration when this process can be
+/// Resolve the config path, run automatic migration when this GUI or daemon can be
 /// the config's non-root owner, then hand the path back so the caller can read
 /// a current `CurrentConfig`.
 ///

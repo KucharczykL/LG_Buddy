@@ -112,9 +112,27 @@ def payload_identity(data: bytes, expected: ReleaseIdentity) -> set[str]:
     return seen
 
 
+def verify_debian_control(data: bytes) -> None:
+    """Match the installed updater's bounded, flat control-archive contract."""
+    seen = set()
+    with tarfile.open(fileobj=io.BytesIO(data), mode='r:') as control:
+        for member in control:
+            name = member.name.removeprefix('./')
+            if name in ('', '.') and member.isdir():
+                continue
+            if (len(seen) >= 64 or name in seen or not member.isfile()
+                or name in ('', '.', '..') or '/' in name or '\\' in name or '\0' in name
+                or len(name.encode('utf-8')) > 4096
+                or (name == 'conffiles' and member.size != 0)):
+                raise AssetError('Unsafe Debian control metadata or package-owned configuration')
+            seen.add(name)
+
+
 def verify_package(package: Path, expected: ReleaseIdentity) -> None:
     names = asset_names(expected.version)
     if package.name == names[1]:
+        control = decode(package, ['dpkg-deb', '--ctrl-tarfile', str(package)], 64 * 1024)
+        verify_debian_control(control)
         metadata = decode(package, ['dpkg-deb', '--field', str(package),
                                    'Package', 'Version', 'Architecture'], 64 * 1024)
         wanted = (f"Package: lg-buddy\nVersion: {debian_version(expected.version)}\n"

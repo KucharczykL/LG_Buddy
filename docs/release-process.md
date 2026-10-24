@@ -197,14 +197,18 @@ digests, checksum entries and identity are verified before use. The harness
 deploys the historical payload, seeds supported stale 1.x selectors, and runs
 the candidate bundle installer in an isolated prefix. Installation must preserve
 the stale settings and credential bytes/ownership/modes. The installed GTK
-application opens without converting them; the owner's first installed screen
-daemon start converts them locally while GTK remains open. There is no
-migration screen or acknowledgement. The GUI does not own conversion.
+application then converts them locally through its shared owner-only startup
+operation, without starting a daemon. Overview, brightness and installed-update
+handoff entries must all convert restored stale contents; a repeated start with
+current contents must not rewrite the file. Version/runtime probes stay read-only.
+There is no migration screen or acknowledgement.
 
 Canaries use disposable environments, passwordless sudo for native transactions,
 Xvfb/private session buses, synthetic retained credentials and no physical TV.
-The legacy check skips historical pip and service activation, then starts the
-real installed owner daemon directly. These are public transport and product
+The legacy check skips historical pip and service activation. Its converted and
+current GUI starts must show the same expected setup-required state because the
+isolated fixture has no running service; this is not service readiness evidence.
+These are public transport and product
 journey checks, separate from the real service-manager/polkit/reboot
 [Ubuntu](debian-vm-validation.md) and [Fedora](rpm-vm-validation.md) records.
 PR CI runs the same v1.8 installer/GTK/startup harness against its v2 candidate

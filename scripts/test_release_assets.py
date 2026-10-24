@@ -29,8 +29,9 @@ if tool == 'dpkg-deb':
         assert args[2:] == ['Package', 'Version', 'Architecture']
         sys.stdout.write(package['metadata'])
     else:
-        assert args[0] == '--fsys-tarfile' and len(args) == 2
-        sys.stdout.buffer.write(base64.b64decode(package['payload']))
+        assert args[0] in ('--fsys-tarfile', '--ctrl-tarfile') and len(args) == 2
+        key = 'control' if args[0] == '--ctrl-tarfile' else 'payload'
+        sys.stdout.buffer.write(base64.b64decode(package[key]))
 else:
     package = json.load(sys.stdin)
     if tool == 'rpm':
@@ -55,7 +56,11 @@ def package_fixtures(directory: Path, identity: ReleaseIdentity) -> list[Path]:
             member.size, member.mode = len(content), mode
             payload.addfile(member, io.BytesIO(content))
     native = identity.version.replace('-', '~', 1) + '-1'
+    control = io.BytesIO()
+    with tarfile.open(fileobj=control, mode='w') as archive:
+        archive.addfile(tarfile.TarInfo('control'), io.BytesIO())
     common = {'payload': base64.b64encode(output.getvalue()).decode(),
+              'control': base64.b64encode(control.getvalue()).decode(),
               'inventory': ''.join(f'/{name}\t0\n' for name in files)}
     names = asset_names(identity.version)
     values = (
@@ -169,6 +174,29 @@ class AssetTests(unittest.TestCase):
         self.checksums()
         with self.assertRaisesRegex(ManifestError, 'embedded identity'):
             verify_assets(self.dist, self.identity)
+
+    def test_debian_control_refuses_conffiles_links_duplicate_and_nested_entries(self):
+        path = self.packages[0]
+        original = json.loads(path.read_text())
+        for name, kind, content, duplicate in (
+            ('conffiles', tarfile.REGTYPE, b'/usr/share/doc/lg-buddy/README.md\n', False),
+            ('control', tarfile.SYMTYPE, b'', False),
+            ('nested/control', tarfile.REGTYPE, b'', False),
+            ('../control', tarfile.REGTYPE, b'', False),
+            ('nested\\control', tarfile.REGTYPE, b'', False),
+            ('control', tarfile.REGTYPE, b'', True),
+        ):
+            with self.subTest(name=name, kind=kind, duplicate=duplicate):
+                output = io.BytesIO()
+                with tarfile.open(fileobj=output, mode='w') as archive:
+                    for _ in range(2 if duplicate else 1):
+                        member = tarfile.TarInfo(name)
+                        member.type, member.size = kind, len(content)
+                        archive.addfile(member, io.BytesIO(content))
+                path.write_text(json.dumps({**original, 'control': base64.b64encode(output.getvalue()).decode()}))
+                self.checksums()
+                with self.assertRaisesRegex(AssetError, 'Debian control'):
+                    verify_assets(self.dist, self.identity)
 
     def test_rpm_mutable_inventory_and_missing_payload_are_refused(self):
         path = self.packages[1]

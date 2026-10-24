@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Upgrade the pinned published v1.8 bundle before installed GUI/daemon startup."""
+"""Upgrade the pinned published v1.8 bundle before installed GUI startup."""
 
 import argparse
 import importlib
@@ -122,7 +122,7 @@ system_sleep_wake_policy=disabled
                                                 'baseline_commit': previous.commit, 'candidate': expected.release_tag,
                                                 'candidate_commit': expected.commit,
                                                 'candidate_transport': 'public GitHub' if args.published else 'local verified bundle',
-                                                'boundary': 'published v1.8 baseline; isolated prefix, skipped historical pip/service activation; real candidate GUI and user daemon'}, indent=2) + '\n')
+                                                'boundary': 'published v1.8 baseline; isolated prefix, skipped historical pip/service activation; real candidate GUI startup, no daemon'}, indent=2) + '\n')
     print('Published v1.8 bundle upgrade and installed first-start migration passed.')
 
 

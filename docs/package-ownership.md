@@ -191,8 +191,8 @@ reruns use the same binding transition:
 This moves selection authority, not user settings. Payload installation leaves
 supported stale 1.x contents for the installed application's existing startup
 conversion under [#137](https://github.com/Staphylococcus/LG_Buddy/issues/137).
-The [user screen daemon's startup boundary](../crates/lg-buddy/src/startup.rs)
-converts as the config's non-root owner before loading it. Conversion is local,
+The [GUI and user screen daemon's startup boundary](../crates/lg-buddy/src/startup.rs)
+converts as the config's non-root owner before config-dependent workers start. Conversion is local,
 preserves preferences/comments/credentials, and does not require acknowledgement,
 a migration screen, TV access or desktop readiness. The root lifecycle daemon
 does not convert; its current-config guard fails until the owner daemon publishes

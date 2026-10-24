@@ -114,6 +114,19 @@ def snapshot(paths: list[Path]):
              path.stat().st_mode & 0o7777) for path in paths]
 
 
+def verify_installed_package(family: str) -> str:
+    if family == 'rpm':
+        version = checked('rpm', '-q', '--qf', '%{VERSION}-%{RELEASE}', 'lg-buddy')
+        report = checked('rpm', '--verify', 'lg-buddy')
+    else:
+        version = checked('dpkg-query', '-W', '-f=${Version}', 'lg-buddy')
+        report = checked('dpkg', '--verify', 'lg-buddy')
+    # dpkg reports missing/corrupt payloads on stdout even with exit status 0.
+    if report:
+        raise AssetError(f'Installed package verification reported discrepancies: {report}')
+    return version
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--format', choices=('debian', 'rpm'), required=True)
@@ -151,6 +164,9 @@ def main():
         if args.format == 'rpm':
             install_log = checked('dnf5', '--assumeyes', '--setopt=install_weak_deps=False', '--setopt=tsflags=', 'install', str(package))
         else:
+            # Minimal Ubuntu excludes docs, including the release manifest.
+            Path('/etc/dpkg/dpkg.cfg.d/zz-lg-buddy-canary-documentation').write_text(
+                'path-include=/usr/share/doc/lg-buddy\npath-include=/usr/share/doc/lg-buddy/*\n')
             install_log = checked('apt-get', 'install', '-y', '--no-install-recommends', str(package),
                                   env={**os.environ, 'DEBIAN_FRONTEND': 'noninteractive'})
         (work / 'baseline-install.output').write_text(install_log + '\n')
@@ -196,12 +212,7 @@ def main():
             text = checked('/usr/bin/' + binary, '--version')
             assert text == (f'lg-buddy {expected.version}\nversion: {expected.version}\n'
                             f'channel: {expected.channel}\ncommit: {expected.commit}'), text
-        if args.format == 'rpm':
-            record['installed_native_version'] = checked('rpm', '-q', '--qf', '%{VERSION}-%{RELEASE}', 'lg-buddy')
-            checked('rpm', '--verify', 'lg-buddy')
-        else:
-            record['installed_native_version'] = checked('dpkg-query', '-W', '-f=${Version}', 'lg-buddy')
-            checked('dpkg', '--verify', 'lg-buddy')
+        record['installed_native_version'] = verify_installed_package(args.format)
         assert record['installed_native_version'] == expected.version.replace('-', '~', 1) + '-1'
         check = checked('runuser', '-u', username, '--', '/usr/bin/lg-buddy', 'updates', 'check', env=environment)
         assert 'status: up to date' in check and f'latest: {expected.version} ({expected.channel})' in check, check

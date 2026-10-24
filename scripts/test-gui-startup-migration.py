@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Observe installed GTK plus the config owner's first screen-daemon start."""
+"""Prove installed GUI startup converts stale config without a daemon or TV."""
 
 import argparse
 import hashlib
@@ -47,7 +47,7 @@ def main():
     prefix = args.isolated_prefix.resolve()
     if os.geteuid() == 0 or prefix == Path('/') or not os.environ.get('DISPLAY') or not os.environ.get('DBUS_SESSION_BUS_ADDRESS'):
         parser.error('requires a normal user, isolated installation prefix, display and private session bus')
-    runtime, gui = prefix / 'usr/bin/lg-buddy', prefix / 'usr/bin/lg-buddy-gui'
+    gui = prefix / 'usr/bin/lg-buddy-gui'
     before, credential = snapshot(args.config), snapshot(args.token)
     assert before[1] == os.geteuid() and credential[1] == os.geteuid()
     assert b'tvs_primary_platform=bscpylgtv' in before[0] and b'screen_backend=swayidle' in before[0]
@@ -55,59 +55,66 @@ def main():
     args.evidence.mkdir()
     environment = {**os.environ, 'LG_BUDDY_CONFIG': str(args.config), 'GTK_A11Y': 'atspi'}
     environment.pop('NO_AT_BRIDGE', None)
-    monitor = application = None
+    application = None
     record = {'outcome': 'failed', 'uid': os.geteuid(),
-              'boundary': 'isolated prefix and private session/display; real installed GUI and screen daemon; no TV required'}
+              'boundary': 'isolated prefix and private session/display; real installed GUI; no daemon or TV; service activation remains unqualified',
+              'launches': []}
     try:
-        with (args.evidence / 'gui.output').open('wb') as output:
-            application = subprocess.Popen([str(gui)], env=environment, stdout=output, stderr=subprocess.STDOUT,
-                                           start_new_session=True)
-            deadline = time.monotonic() + 20
-            while time.monotonic() < deadline:
-                window = subprocess.run(['xdotool', 'search', '--onlyvisible', '--pid', str(application.pid), '--name', '^LG Buddy$'],
-                                        capture_output=True, timeout=3)
-                if window.returncode == 0:
-                    break
-                assert application.poll() is None, 'installed GUI exited before opening'
-                time.sleep(.1)
-            else:
-                raise AssertionError('installed GUI did not open')
-            assert snapshot(args.config) == before and snapshot(args.token) == credential
-            record['gui_open_preserved_stale_config'] = True
-            # This is the ordinary per-user service entrypoint. The GUI remains
-            # open while the owner starts it; no foreground migration is invoked.
-            with (args.evidence / 'screen.output').open('wb') as output:
-                monitor = subprocess.Popen([str(runtime), 'monitor'], env=environment, stdout=output,
-                                           stderr=subprocess.STDOUT, start_new_session=True)
-                deadline = time.monotonic() + 15
+        probe_mtime = args.config.stat().st_mtime_ns
+        for probe in ('--version', '--check-runtime'):
+            subprocess.run([str(gui), probe], env=environment, check=True, capture_output=True, timeout=10)
+            assert snapshot(args.config) == before and args.config.stat().st_mtime_ns == probe_mtime
+            assert snapshot(args.token) == credential
+        # Repeated current startup must not rewrite; restored legacy contents
+        # must convert through every ordinary GUI entry, including handoff.
+        for name, arguments, restore in (
+            ('overview', [], True), ('current', [], False),
+            ('brightness', ['brightness'], True), ('relaunch', ['--gapplication-replace'], True),
+        ):
+            if restore:
+                args.config.write_bytes(before[0])
+            current_mtime = args.config.stat().st_mtime_ns
+            with (args.evidence / f'{name}.output').open('wb') as output:
+                application = subprocess.Popen([str(gui), *arguments], env=environment, stdout=output,
+                                               stderr=subprocess.STDOUT, start_new_session=True)
+                deadline = time.monotonic() + 20
                 while time.monotonic() < deadline and args.config.read_bytes() != expected:
-                    assert monitor.poll() is None, 'screen daemon exited before conversion'
+                    assert application.poll() is None, 'installed GUI exited before conversion'
                     time.sleep(.1)
-                assert snapshot(args.config) == (expected, *before[1:]), 'startup did not perform only the supported conversion'
-                assert snapshot(args.token) == credential, 'startup changed native credential bytes or metadata'
+                assert snapshot(args.config) == (expected, *before[1:]), 'GUI startup did not perform only the supported conversion'
+                assert snapshot(args.token) == credential, 'GUI startup changed native credential bytes or metadata'
+                if not restore:
+                    assert args.config.stat().st_mtime_ns == current_mtime, 'current GUI startup rewrote config'
                 deadline = time.monotonic() + 15
                 labels = set()
                 while time.monotonic() < deadline:
+                    assert application.poll() is None, 'installed GUI exited before presenting its normal state'
                     apps = [app for app in pyatspi.Registry.getDesktop(0)
                             if ui.name(app) in {'lg-buddy-gui', '.lg-buddy-gui-wrapped'}]
                     labels = {ui.name(item) for app in apps for item in ui.accessible_tree(app) if ui.is_showing(item)}
-                    if labels:
+                    # This fixture deliberately has no running service. Require
+                    # the same ordinary setup state for converted and current
+                    # input, rather than mistaking any accessible window for
+                    # readiness or fabricating a successful setup assessment.
+                    if {'Setup required', 'Complete setup'} <= labels:
                         break
                     time.sleep(.1)
-                assert labels, 'installed GUI had no observable accessibility tree'
+                else:
+                    raise AssertionError(f'GUI did not present the expected unactivated-service state: {labels}')
                 assert not any('migrat' in label.lower() for label in labels), labels
                 assert application.poll() is None, 'installed GUI exited during startup conversion'
-                record.update(outcome='passed', gui_pid=application.pid, screen_pid=monitor.pid,
-                              config_access=before[1:], credential_access=credential[1:],
-                              config_before_sha256=hashlib.sha256(before[0]).hexdigest(),
-                              config_after_sha256=hashlib.sha256(expected).hexdigest(),
-                              credential_sha256=hashlib.sha256(credential[0]).hexdigest(),
-                              gui_controls=sorted(labels))
+                record['launches'].append({'entry': name, 'gui_pid': application.pid,
+                                          'state': 'setup-required (services not activated)', 'controls': sorted(labels)})
+            stop(application)
+            application = None
+        record.update(outcome='passed', config_access=before[1:], credential_access=credential[1:],
+                      config_before_sha256=hashlib.sha256(before[0]).hexdigest(),
+                      config_after_sha256=hashlib.sha256(expected).hexdigest(),
+                      credential_sha256=hashlib.sha256(credential[0]).hexdigest())
     finally:
-        stop(monitor)
         stop(application)
         (args.evidence / 'result.json').write_text(json.dumps(record, indent=2) + '\n')
-    print('Installed GUI/startup migration passed: payload and GUI preserve stale data; owner daemon converts locally without migration acknowledgement.')
+    print('Installed GUI startup migration passed: overview, brightness and update handoff convert locally without a daemon; current startup and probes preserve data.')
 
 
 if __name__ == '__main__':

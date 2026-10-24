@@ -507,7 +507,7 @@ jobs:
               --output "$RUNNER_TEMP/lg-buddy-1.8.0-x86_64-unknown-linux-musl.tar.gz" \
               https://github.com/Staphylococcus/LG_Buddy/releases/download/v1.8.0/lg-buddy-1.8.0-x86_64-unknown-linux-musl.tar.gz
 
-      - name: Upgrade published v1.8 to the published candidate before owner startup migration
+      - name: Upgrade published v1.8 to the published candidate before GUI startup migration
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.validate.outputs.tag }}
