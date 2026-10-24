@@ -40,7 +40,9 @@ SemVer. Native ordering tests cover every supported form. Both binaries retain
 their upstream version/channel/commit identity, independent of the RPM release.
 
 RPM generates actual ELF library dependencies and declares GTK >= 4.14,
-libadwaita >= 1.5, systemd, polkit and DNF5. Optional KWin payloads are excluded
+libadwaita >= 1.5, the GLES renderer library, systemd, polkit and DNF5.
+GTK loads GLES dynamically, so its provider is an explicit dependency even
+when weak dependencies are disabled. Optional KWin payloads are excluded
 from dependency/provides scanning so they do not require KWin, Qt or a compiler
 on every desktop. Python is a build/test dependency only. The GPL license is
 installed as `%license` under `/usr/share/licenses/lg-buddy/`.

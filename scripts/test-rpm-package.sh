@@ -66,6 +66,7 @@ PYRPM
 depends=$(rpm -qp --requires "$candidate")
 grep -Fxq 'gtk4 >= 4.14' <<<"$depends"
 grep -Fxq 'libadwaita >= 1.5' <<<"$depends"
+grep -Fxq 'libglvnd-gles' <<<"$depends"
 if grep -Eiq 'python|bscpylgtv|zenity|swayidle|kwin|plasma|cmake|g\+\+|libQt|libKF' <<<"$depends"; then
     fail "Package requires obsolete or optional integration/build dependencies"
 fi
