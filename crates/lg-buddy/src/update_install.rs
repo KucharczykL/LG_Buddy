@@ -10,6 +10,7 @@ use std::thread;
 use semver::Version;
 
 use crate::release_bundle::debian::{self, VerifiedDebianPackage};
+use crate::release_bundle::rpm::{self, VerifiedRpmPackage};
 use crate::release_bundle::{
     acquire_release_bundle, resolve_release_identity, verify_release_binary_identity,
     verify_release_gui_binary_identity, BundleAcquisitionError, ReleaseIdentity,
@@ -31,6 +32,7 @@ pub enum UpdateInstallError {
     Updates(UpdatesError),
     Bundle(BundleAcquisitionError),
     DebianPackage(BundleAcquisitionError),
+    RpmPackage(BundleAcquisitionError),
     PackageState(String),
     OwnershipChanged(InstallationOwnership),
     Relaunch(io::Error),
@@ -87,7 +89,8 @@ impl fmt::Display for UpdateInstallError {
             Self::Updates(error) => write!(formatter, "update discovery failed: {error}"),
             Self::Bundle(error) => write!(formatter, "release bundle verification failed: {error}"),
             Self::DebianPackage(error) => write!(formatter, "Debian package verification failed: {error}"),
-            Self::PackageState(error) => write!(formatter, "APT package state could not be verified: {error}"),
+            Self::RpmPackage(error) => write!(formatter, "RPM package verification failed: {error}"),
+            Self::PackageState(error) => write!(formatter, "Native package state could not be verified: {error}"),
             Self::OwnershipChanged(_) => formatter.write_str("installation ownership changed after confirmation; start a fresh update check"),
             Self::Relaunch(error) => write!(formatter, "update installed, but the installed GUI could not be started: {error}"),
             Self::InvalidCurrentVersion { version, source } => {
@@ -190,7 +193,7 @@ impl Error for UpdateInstallError {
         match self {
             Self::Updates(error) => Some(error),
             Self::Bundle(error) => Some(error),
-            Self::DebianPackage(error) => Some(error),
+            Self::DebianPackage(error) | Self::RpmPackage(error) => Some(error),
             Self::Relaunch(error) => Some(error),
             Self::InvalidCurrentVersion { source, .. } => Some(source),
             Self::Output(error)
@@ -305,6 +308,7 @@ impl UpdateInstallError {
             Self::Updates(_) => "The release information could not be retrieved.".to_string(),
             Self::Bundle(_) => "The release bundle could not be verified.".to_string(),
             Self::DebianPackage(_) => "The Debian release package could not be verified.".to_string(),
+            Self::RpmPackage(_) => "The RPM release package could not be verified.".to_string(),
             Self::PackageState(_) => "The native package update could not be verified. Review the error details and resolve the host or package state before retrying.".into(),
             Self::OwnershipChanged(_) => "Installation ownership changed after confirmation. Start a fresh update check.".into(),
             Self::Relaunch(_) => "The update was installed and verified, but LG Buddy could not restart. Open it from the application menu.".into(),
@@ -590,29 +594,34 @@ struct SystemUpdateInstallRuntime {
 enum UpdateDelivery {
     Bundle,
     Apt,
+    Dnf,
 }
 
 enum VerifiedUpdate {
     Bundle(VerifiedReleaseBundle),
     Debian(VerifiedDebianPackage),
+    Rpm(VerifiedRpmPackage),
 }
 
 impl BundleView for VerifiedUpdate {
     fn identity(&self) -> &ReleaseIdentity {
         match self {
             Self::Bundle(bundle) => bundle.identity(),
-            Self::Debian(package) => &package.identity,
+            Self::Debian(package) | Self::Rpm(package) => &package.identity,
         }
     }
 }
 
 fn refused_ownership_guidance(ownership: InstallationOwnership) -> String {
-    update_install_guidance(ownership).unwrap_or_else(|| "This APT package is incompatible with automatic installation. Use APT to inspect and repair it before retrying.".into())
+    update_install_guidance(ownership).unwrap_or_else(|| {
+        let manager = match ownership { InstallationOwnership::Package { family } => family.package_manager(), _ => "the native package manager" };
+        format!("This {manager} package is incompatible with automatic installation. Use {manager} to inspect and repair it before retrying.")
+    })
 }
 
 pub(crate) fn update_install_guidance(ownership: InstallationOwnership) -> Option<String> {
     match ownership {
-        InstallationOwnership::Bundle | InstallationOwnership::Package { family: PackageFamily::Dpkg } => None,
+        InstallationOwnership::Bundle | InstallationOwnership::Package { family: PackageFamily::Dpkg | PackageFamily::Rpm } => None,
         InstallationOwnership::Package { family } => Some(format!(
             "This installation is managed by {}. Use that package manager to install a suitable verified package from your package source or maintainer. LG Buddy cannot install package updates in this version.",
             family.package_manager(),
@@ -647,17 +656,17 @@ fn check_update_installation(
 fn check_update_delivery(
     executable: Result<PathOwnership, PackageDatabaseError>,
     bundle_preflight: impl FnOnce() -> CompatibilityReport,
-    package_preflight: impl FnOnce() -> Result<(), String>,
+    package_preflight: impl FnOnce(PackageFamily) -> Result<(), String>,
 ) -> Result<UpdateDelivery, UpdateInstallError> {
     if let Ok(PathOwnership::Owned(owner)) = &executable {
-        if owner.family == PackageFamily::Dpkg {
-            if !matches!(owner.name.as_str(), "lg-buddy" | "lg-buddy:amd64") {
+        if matches!(owner.family, PackageFamily::Dpkg | PackageFamily::Rpm) {
+            if owner.name != "lg-buddy" && !(owner.family == PackageFamily::Dpkg && owner.name == "lg-buddy:amd64") {
                 return Err(UpdateInstallError::OwnershipRefused(
                     InstallationOwnership::Unknown,
                 ));
             }
-            package_preflight().map_err(UpdateInstallError::PackageState)?;
-            return Ok(UpdateDelivery::Apt);
+            package_preflight(owner.family).map_err(UpdateInstallError::PackageState)?;
+            return Ok(if owner.family == PackageFamily::Dpkg { UpdateDelivery::Apt } else { UpdateDelivery::Dnf });
         }
     }
     check_update_installation(executable, bundle_preflight)?;
@@ -674,7 +683,11 @@ fn system_update_preflight(require_gui: bool) -> Result<UpdateDelivery, UpdateIn
                 current_host_preflight()
             }
         },
-        || crate::debian_update::installed_version().map(|_| ()),
+        |family| match family {
+            PackageFamily::Dpkg => crate::debian_update::installed_version().map(|_| ()),
+            PackageFamily::Rpm => crate::rpm_update::installed_version().map(|_| ()),
+            _ => unreachable!(),
+        },
     )
 }
 
@@ -684,6 +697,7 @@ pub(crate) fn gui_update_ownership() -> InstallationOwnership {
         Ok(UpdateDelivery::Apt) => InstallationOwnership::Package {
             family: PackageFamily::Dpkg,
         },
+        Ok(UpdateDelivery::Dnf) => InstallationOwnership::Package { family: PackageFamily::Rpm },
         Err(UpdateInstallError::OwnershipRefused(ownership)) => ownership,
         Err(_) => InstallationOwnership::Unknown,
     }
@@ -729,6 +743,7 @@ impl UpdateInstallRuntime for SystemUpdateInstallRuntime {
             UpdateDelivery::Apt => {
                 debian::resolve_identity(release).map_err(UpdateInstallError::DebianPackage)
             }
+            UpdateDelivery::Dnf => rpm::resolve_identity(release).map_err(UpdateInstallError::RpmPackage),
         }
     }
 
@@ -740,6 +755,7 @@ impl UpdateInstallRuntime for SystemUpdateInstallRuntime {
                 UpdateDelivery::Apt => InstallationOwnership::Package {
                     family: PackageFamily::Dpkg,
                 },
+                UpdateDelivery::Dnf => InstallationOwnership::Package { family: PackageFamily::Rpm },
             }));
         }
         Ok(())
@@ -765,6 +781,7 @@ impl UpdateInstallRuntime for SystemUpdateInstallRuntime {
             UpdateDelivery::Apt => debian::acquire(release)
                 .map(VerifiedUpdate::Debian)
                 .map_err(UpdateInstallError::DebianPackage),
+            UpdateDelivery::Dnf => rpm::acquire(release).map(VerifiedUpdate::Rpm).map_err(UpdateInstallError::RpmPackage),
         }
     }
 
@@ -773,6 +790,9 @@ impl UpdateInstallRuntime for SystemUpdateInstallRuntime {
             VerifiedUpdate::Debian(package) => {
                 return crate::debian_update::candidate_preflight(&package.identity)
                     .map_err(UpdateInstallError::PackageState)
+            }
+            VerifiedUpdate::Rpm(package) => {
+                return crate::rpm_update::candidate_preflight(&package.identity).map_err(UpdateInstallError::PackageState)
             }
             VerifiedUpdate::Bundle(bundle) => bundle,
         };
@@ -810,6 +830,11 @@ impl UpdateInstallRuntime for SystemUpdateInstallRuntime {
                     run_bounded_command(command).map_err(UpdateInstallError::InstallerLaunch)?;
                 return classify_gui_installer_output(&output);
             }
+            VerifiedUpdate::Rpm(package) => {
+                let command = crate::rpm_update::installer_command(package, self.require_gui).map_err(UpdateInstallError::PackageState)?;
+                let output = run_bounded_command(command).map_err(UpdateInstallError::InstallerLaunch)?;
+                return classify_gui_installer_output(&output);
+            }
             VerifiedUpdate::Bundle(bundle) => bundle,
         };
         let mut command = if self.require_gui {
@@ -841,9 +866,12 @@ impl UpdateInstallRuntime for SystemUpdateInstallRuntime {
             crate::debian_update::verify_installed(expected)
                 .map_err(UpdateInstallError::PackageState)?;
         }
+        if self.delivery == UpdateDelivery::Dnf {
+            crate::rpm_update::verify_installed(expected).map_err(UpdateInstallError::PackageState)?;
+        }
         let (runtime_path, gui_path) = match self.delivery {
             UpdateDelivery::Bundle => (installed_binary_path(), installed_gui_binary_path()),
-            UpdateDelivery::Apt => (
+            UpdateDelivery::Apt | UpdateDelivery::Dnf => (
                 PathBuf::from("/usr/bin/lg-buddy"),
                 PathBuf::from("/usr/bin/lg-buddy-gui"),
             ),
@@ -864,7 +892,7 @@ impl UpdateInstallRuntime for SystemUpdateInstallRuntime {
         &mut self,
         installed: &InstalledUpdate,
     ) -> Result<(), UpdateInstallError> {
-        if self.delivery == UpdateDelivery::Apt
+        if matches!(self.delivery, UpdateDelivery::Apt | UpdateDelivery::Dnf)
             && !self.require_gui
             && io::stdin().is_terminal()
             && unsafe { libc::geteuid() } != 0
@@ -1446,7 +1474,7 @@ mod tests {
             &mut self,
             _installed: &InstalledUpdate,
         ) -> Result<(), UpdateInstallError> {
-            if self.delivery == UpdateDelivery::Apt {
+            if matches!(self.delivery, UpdateDelivery::Apt | UpdateDelivery::Dnf) {
                 self.events.borrow_mut().push("relaunch");
             }
             Ok(())
@@ -1467,14 +1495,14 @@ mod tests {
 
         fn initial_preflight(&mut self) -> Result<(), UpdateInstallError> {
             self.events.borrow_mut().push("initial_preflight");
-            if self.delivery == UpdateDelivery::Apt {
+            if matches!(self.delivery, UpdateDelivery::Apt | UpdateDelivery::Dnf) {
                 assert_eq!(
                     check_update_delivery(
                         self.executable_ownership.clone(),
                         CompatibilityReport::default,
-                        || Ok(())
+                        |_| Ok(())
                     )?,
-                    UpdateDelivery::Apt
+                    self.delivery
                 );
             } else {
                 check_update_installation(
@@ -1571,7 +1599,7 @@ mod tests {
         fn run_installer(&mut self, _bundle: &Self::Bundle) -> Result<(), UpdateInstallError> {
             self.events
                 .borrow_mut()
-                .push(if self.delivery == UpdateDelivery::Apt {
+                .push(if matches!(self.delivery, UpdateDelivery::Apt | UpdateDelivery::Dnf) {
                     "apt_installer"
                 } else {
                     "installer"
@@ -2174,6 +2202,34 @@ mod tests {
     }
 
     #[test]
+    fn dnf_delivery_reuses_confirmation_identity_verification_and_interactive_handoff() {
+        let mut runtime = FakeRuntime::new("1.5.0");
+        runtime.delivery = UpdateDelivery::Dnf;
+        runtime.executable_ownership = Ok(PathOwnership::Owned(PackageOwner {
+            family: PackageFamily::Rpm,
+            name: "lg-buddy".into(),
+            version: None,
+        }));
+        run_update_install_with(&mut Vec::new(), &mut runtime).unwrap();
+        assert_eq!(
+            runtime.event_names(),
+            [
+                "current",
+                "initial_preflight",
+                "discover",
+                "resolve",
+                "confirm",
+                "acquire",
+                "candidate_preflight",
+                "apt_installer",
+                "installed_identity",
+                "drop_bundle",
+                "relaunch"
+            ]
+        );
+    }
+
+    #[test]
     fn native_delivery_requires_the_lg_buddy_owner_and_verified_package_state() {
         let owned = |name: &str| {
             Ok(PathOwnership::Owned(PackageOwner {
@@ -2186,13 +2242,13 @@ mod tests {
             check_update_delivery(
                 owned("lg-buddy"),
                 || panic!("native packages do not use the bundle preflight"),
-                || Ok(())
+                |_| Ok(())
             )
             .unwrap(),
             UpdateDelivery::Apt
         );
         assert!(matches!(
-            check_update_delivery(owned("lg-buddy"), CompatibilityReport::default, || Err(
+            check_update_delivery(owned("lg-buddy"), CompatibilityReport::default, |_| Err(
                 "unconfigured package".into()
             )),
             Err(UpdateInstallError::PackageState(_))
@@ -2201,7 +2257,7 @@ mod tests {
             check_update_delivery(
                 owned("other-package"),
                 CompatibilityReport::default,
-                || panic!("foreign owner must not dispatch to APT")
+                |_| panic!("foreign owner must not dispatch to APT")
             ),
             Err(UpdateInstallError::OwnershipRefused(
                 crate::upgrade_preflight::InstallationOwnership::Unknown
@@ -2211,7 +2267,7 @@ mod tests {
             check_update_delivery(
                 Ok(PathOwnership::Unowned),
                 CompatibilityReport::default,
-                || panic!("bundle must not dispatch to APT")
+                |_| panic!("bundle must not dispatch to APT")
             )
             .unwrap(),
             UpdateDelivery::Bundle

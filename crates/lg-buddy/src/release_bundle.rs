@@ -21,6 +21,8 @@ use url::Url;
 use crate::updates::{ReleaseAsset, ReleaseInfo, UpdateChannel};
 
 pub(crate) mod debian;
+pub(crate) mod native_package;
+pub(crate) mod rpm;
 
 const REPOSITORY_OWNER: &str = "Staphylococcus";
 const REPOSITORY_NAME: &str = "LG_Buddy";

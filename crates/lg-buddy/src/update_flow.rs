@@ -236,7 +236,7 @@ impl UpdateInstallApplication {
                 report.installation_ownership,
                 InstallationOwnership::Bundle
                     | InstallationOwnership::Package {
-                        family: PackageFamily::Dpkg
+                        family: PackageFamily::Dpkg | PackageFamily::Rpm
                     }
             )
         });

@@ -141,6 +141,8 @@ The [Debian package development guide](debian-package.md) covers the local
 package builder, APT updater and isolated lifecycle checks. The
 [Ubuntu VM qualification](debian-vm-validation.md) records real desktop,
 service-manager, polkit and reboot coverage separately under #134.
+The [RPM package development guide](rpm-package.md) covers the Fedora 43
+package builder and isolated native lifecycle checks under #135.
 
 `install.sh` is installer-only. It does not build the runtime or GUI.
 
@@ -179,14 +181,14 @@ are reused without changing their modes.
 
 The updater uses the same fallible package database as installer preflight.
 Recognized bundles use the bundle installer. A healthy `lg-buddy` Debian package
-uses verified local-package acquisition and APT; DNF/pacman installations receive
-package-source guidance, and unverifiable ownership refuses automatic installation.
+uses verified local-package acquisition and APT; the RPM package uses DNF5.
+Pacman installations receive package-source guidance, and unverifiable ownership refuses automatic installation.
 Ownership is checked before release discovery and again after acquisition,
 before candidate checks or installer execution. GUI update checks remain
 available; supported delivery owners share the install action.
 
-APT adapter details and qualification limits are in the Debian guide; DNF
-delivery remains #135 and package publication remains #136. Downloadable release
+Native adapter details and qualification limits are in the Debian and RPM
+guides; package publication remains #136. Downloadable release
 packages do not configure a repository or promise that `apt upgrade` or
 `dnf upgrade` discovers LG Buddy releases.
 
@@ -210,12 +212,14 @@ The GUI launch checks cover both no-argument normal Overview launch and the
 brightness deep link, including focus handoff from another view. Installed
 smoke keeps the desktop entry, runtime, and GUI together.
 
-PR CI runs verification and the KWin checks first, then builds the candidate
-bundle and GUI journey fixtures once. Ubuntu runs the release-bundle, installed
+PR CI runs verification and the KWin checks first. Verification builds GUI
+journey fixtures using its existing GNU debug dependency graph; the bundle job
+builds only the optimized runtime and GUI. Ubuntu runs the release-bundle, installed
 GUI, and cross-version upgrade suites in separate matrix jobs, each with a
 20-minute limit. Those jobs and Fedora/Arch checks consume the same artifacts
 in parallel. The required `bundle-smoke-test` check passes only when artifact
-production and every Ubuntu smoke suite succeed; failures, timeouts, and skipped
+production, every Ubuntu smoke suite and both native package jobs succeed;
+failures, timeouts, and skipped
 jobs fail the check.
 
 The root ownership checks execute the library test binary that Cargo already

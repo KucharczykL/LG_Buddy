@@ -1544,7 +1544,7 @@ fn updater_renderer_scenarios(application: &adw::Application) {
             Ok(UpdateCheckReport {
                 installation_ownership:
                     lg_buddy::upgrade_preflight::InstallationOwnership::Package {
-                        family: lg_buddy::upgrade_preflight::PackageFamily::Rpm,
+                        family: lg_buddy::upgrade_preflight::PackageFamily::Pacman,
                     },
                 installed_version: "1.6.0".into(),
                 channel: UpdateChannel::Stable,
@@ -1555,7 +1555,7 @@ fn updater_renderer_scenarios(application: &adw::Application) {
         .unwrap();
     view.render(model.presentation());
     assert_eq!(row.title(), "Update available");
-    assert!(row.subtitle().unwrap().contains("DNF"));
+    assert!(row.subtitle().unwrap().contains("pacman"));
     assert_eq!(action.label().as_deref(), Some("Check for updates"));
     assert!(action.is_sensitive());
     assert!(!view.updater.presented.get());
@@ -1563,29 +1563,35 @@ fn updater_renderer_scenarios(application: &adw::Application) {
         .handle_intent(SettingsIntent::PrepareUpdateInstall)
         .is_none());
 
-    let checking = model
-        .handle_intent(SettingsIntent::CheckForUpdates)
-        .unwrap();
-    view.render(checking.presentation());
-    assert!(view.updater.notice.borrow().is_none());
-    model
-        .complete_update_check(
-            checking.update_check_operation().unwrap(),
-            Ok(UpdateCheckReport {
-                installation_ownership:
-                    lg_buddy::upgrade_preflight::InstallationOwnership::Package {
-                        family: lg_buddy::upgrade_preflight::PackageFamily::Dpkg,
-                    },
-                installed_version: "1.6.0".into(),
-                channel: UpdateChannel::Stable,
-                update_available: true,
-                warning: None,
-            }),
-        )
-        .unwrap();
-    view.render(model.presentation());
-    assert_eq!(row.title(), "Update available");
-    assert_eq!(action.label().as_deref(), Some("Install update…"));
+    for family in [
+        lg_buddy::upgrade_preflight::PackageFamily::Dpkg,
+        lg_buddy::upgrade_preflight::PackageFamily::Rpm,
+    ] {
+        let checking = model
+            .handle_intent(SettingsIntent::CheckForUpdates)
+            .unwrap();
+        view.render(checking.presentation());
+        assert!(view.updater.notice.borrow().is_none());
+        model
+            .complete_update_check(
+                checking.update_check_operation().unwrap(),
+                Ok(UpdateCheckReport {
+                    installation_ownership:
+                        lg_buddy::upgrade_preflight::InstallationOwnership::Package {
+                            family,
+                        },
+                    installed_version: "1.6.0".into(),
+                    channel: UpdateChannel::Stable,
+                    update_available: true,
+                    warning: None,
+                }),
+            )
+            .unwrap();
+        view.render(model.presentation());
+        assert_eq!(row.title(), "Update available");
+        assert_eq!(action.label().as_deref(), Some("Install update…"));
+    }
+
     action.emit_clicked();
     assert_eq!(
         intents.borrow_mut().pop(),

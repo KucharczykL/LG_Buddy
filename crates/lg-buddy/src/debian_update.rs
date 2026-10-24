@@ -5,42 +5,19 @@ use std::fs::File;
 use std::io::{self, Write};
 use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use semver::Version;
 
+use crate::native_update::{capture, native_command, verify_native_paths};
 use crate::release_bundle::{
     debian, verify_release_binary_identity, verify_release_gui_binary_identity, ReleaseIdentity,
 };
 use crate::updates::UpdateChannel;
-use crate::upgrade_preflight::{
-    FilesystemFacts, OsFilesystemFacts, PackageDatabase, PackageFamily, PathKind, PathOwnership,
-};
+use crate::upgrade_preflight::{OsFilesystemFacts, PackageDatabase, PackageFamily, PathOwnership};
 
 const RUNTIME: &str = "/usr/bin/lg-buddy";
 const GUI: &str = "/usr/bin/lg-buddy-gui";
-
-fn native_command(program: &str) -> Command {
-    let mut command = Command::new(program);
-    command
-        .current_dir("/")
-        .env_clear()
-        .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
-        .env("LC_ALL", "C")
-        .env("HOME", "/root")
-        .env("DEBIAN_FRONTEND", "noninteractive")
-        .stdin(Stdio::null());
-    command
-}
-
-fn capture(command: Command) -> Result<String, String> {
-    let output =
-        crate::update_install::run_bounded_command(command).map_err(|error| error.to_string())?;
-    if !output.status.success() {
-        return Err(output.diagnostic());
-    }
-    Ok(output.stdout)
-}
 
 fn verify_owners() -> Result<(), String> {
     verify_native_paths(&OsFilesystemFacts)?;
@@ -50,35 +27,6 @@ fn verify_owners() -> Result<(), String> {
             Ok(PathOwnership::Owned(owner)) if owner.family == PackageFamily::Dpkg
                 && matches!(owner.name.as_str(), "lg-buddy" | "lg-buddy:amd64") => {},
             _ => return Err(format!("APT update requires both binaries to be owned by the lg-buddy Debian package: {path}")),
-        }
-    }
-    Ok(())
-}
-
-fn verify_native_paths(filesystem: &impl FilesystemFacts) -> Result<(), String> {
-    crate::upgrade_preflight::installer::mutable_host(filesystem, Path::new("/"))
-        .map_err(|error| error.to_string())?;
-    for binary in [RUNTIME, GUI] {
-        for path in Path::new(binary).ancestors() {
-            let facts = filesystem
-                .path_facts(path)
-                .map_err(|error| error.to_string())?;
-            let executable = path == Path::new(binary);
-            if facts.owner_uid != 0
-                || facts.mode & 0o022 != 0
-                || facts.read_only_filesystem
-                || (executable
-                    && (facts.kind != PathKind::File
-                        || facts.link_count != 1
-                        || facts.mode & 0o7777 != 0o755
-                        || facts.mount_point))
-                || (!executable && facts.kind != PathKind::Directory)
-            {
-                return Err(format!(
-                    "Native package path is unsafe or read-only: {}",
-                    path.display()
-                ));
-            }
         }
     }
     Ok(())
@@ -144,25 +92,7 @@ pub(crate) fn installer_command(
     package: &debian::VerifiedDebianPackage,
     graphical: bool,
 ) -> Result<Command, String> {
-    let mut command = if unsafe { libc::geteuid() } == 0 {
-        Command::new(RUNTIME)
-    } else {
-        let mut command = Command::new(if graphical || !Path::new("/usr/bin/sudo").is_file() {
-            "/usr/bin/pkexec"
-        } else {
-            "/usr/bin/sudo"
-        });
-        command.arg(RUNTIME);
-        command
-    };
-    command
-        .arg("apply-debian-update")
-        .arg(package.identity.release_tag())
-        .arg(package.identity.commit())
-        .stdin(Stdio::from(
-            package.input().map_err(|error| error.to_string())?,
-        ));
-    Ok(command)
+    crate::native_update::installer_command(package, "apply-debian-update", graphical)
 }
 
 fn apt_command(package: &Path, simulate: bool) -> Command {
@@ -240,7 +170,7 @@ pub fn run(arguments: &[String]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::upgrade_preflight::PathFacts;
+    use crate::upgrade_preflight::{FilesystemFacts, PathFacts, PathKind};
     use std::collections::HashMap;
     use std::ffi::OsStr;
 

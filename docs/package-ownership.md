@@ -6,10 +6,11 @@ provisioning, binding, installer and updater prework is implemented. Debian
 package creation and its APT adapter have isolated coverage and
 [Ubuntu VM qualification](debian-vm-validation.md) under
 [#134](https://github.com/Staphylococcus/LG_Buddy/issues/134).
-RPM delivery remains [#135](https://github.com/Staphylococcus/LG_Buddy/issues/135);
-publication remains
-[#136](https://github.com/Staphylococcus/LG_Buddy/issues/136). Requirements for
-those deliveries below do not mean package assets already ship.
+RPM package creation and its DNF5 adapter have isolated coverage and
+[Fedora VM qualification](rpm-vm-validation.md) under
+[#135](https://github.com/Staphylococcus/LG_Buddy/issues/135).
+Public package assets and update canaries remain
+[#136](https://github.com/Staphylococcus/LG_Buddy/issues/136).
 
 ## Ownership invariant
 
@@ -239,31 +240,34 @@ loader proof and fallback details remain in [KWin integration](kwin-integration.
 
 The implemented updater checks installation ownership before release discovery
 and again after acquisition, before candidate/installer execution. Bundles and
-healthy LG Buddy Debian packages share the install action. Other owners receive
-ownership guidance; uncertainty and changed ownership invalidate a stale offer.
+healthy LG Buddy Debian and RPM packages share the install action. Other owners
+receive ownership guidance; uncertainty and changed ownership invalidate a stale
+offer.
 
 | Ownership | Implemented behavior | Remaining delivery work |
 | --- | --- | --- |
 | `Bundle` | Verified release-bundle installation | Preserve this path for existing bundles and Arch |
 | `Package { Dpkg }` | Verified local `.deb` acquisition and APT for the healthy `lg-buddy` package | #136 publication and public update canaries |
-| `Package { Rpm }` | Refuse self-install; show DNF guidance | #135 acquires a verified local `.rpm` and delegates installation to DNF |
+| `Package { Rpm }` | Verified local `.rpm` acquisition and DNF5 for the healthy `lg-buddy` package | #136 publication and public update canaries |
 | `Package { Pacman }` | Refuse self-install; show pacman guidance | Externally managed; no pacman delivery in v2 |
 | `Unknown` | Refuse automatic installation | Remains refused, including conflicting/error observations |
 
-APT/DNF delivery must reuse the saved update channel, release discovery,
+APT/DNF delivery reuses the saved update channel, release discovery,
 explicit confirmation, verification and installed-app relaunch flow. Package
 managers own dependency resolution and system mutations. A downloadable local
 package does not establish an APT/DNF repository or promise that a normal
 repository upgrade discovers LG Buddy releases.
 
-The [Debian adapter](debian-package.md#integrated-updates) additionally rechecks
-the selected delivery kind after acquisition. Its installed privileged runtime
+The [Debian](debian-package.md#integrated-updates) and
+[RPM](rpm-package.md#updates) adapters additionally recheck
+the selected delivery kind after acquisition. The installed privileged runtime
 revalidates the official release digest, stages only matching bytes under root
-control and invokes APT with fixed arguments and a clean environment. Native
-package state, ownership and both binaries are verified after the transaction.
-The real APT container smoke substitutes HTTP transport and authentication;
-desktop service managers, polkit and reboot also have separate
-[Ubuntu VM qualification](debian-vm-validation.md).
+control and invokes APT or DNF5 with fixed arguments and a clean environment.
+Native package state, ownership and both binaries are verified after the transaction.
+The native package container smoke tests substitute HTTP transport and
+authentication; desktop service managers, polkit and reboot also have separate
+[Ubuntu](debian-vm-validation.md) and [Fedora](rpm-vm-validation.md) VM
+qualification.
 
 ### Common identity tuple
 
@@ -389,6 +393,6 @@ upgrade, reboot and removal on actual Ubuntu/Fedora VMs. #136 adds exact-commit
 asset publication/checksum/digest verification and public package update
 canaries, while retaining bundle/Arch and historical bundle-upgrade coverage.
 Those delivery/real-host results must be recorded separately from prework
-fixture success. The [Ubuntu VM record](debian-vm-validation.md) documents the
-Debian result; RPM/Fedora qualification and public package canaries remain
-separate work.
+fixture success. The [Ubuntu VM record](debian-vm-validation.md) and
+[Fedora VM record](rpm-vm-validation.md) document the Debian and RPM results.
+Public package assets and update canaries remain #136.

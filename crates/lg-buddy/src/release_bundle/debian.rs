@@ -3,25 +3,8 @@
 
 use super::*;
 use std::io::Cursor;
+#[cfg(test)]
 use std::process::{Command, Stdio};
-
-#[derive(Debug)]
-pub(crate) struct VerifiedDebianPackage {
-    pub(crate) identity: ReleaseIdentity,
-    file: File,
-    _staging: StagingDirectory,
-}
-
-impl VerifiedDebianPackage {
-    pub(crate) fn input(&self) -> Result<File, BundleAcquisitionError> {
-        rewind_clone(&self.file)
-    }
-}
-
-pub(crate) struct RootDebianPackage {
-    pub(crate) path: PathBuf,
-    _staging: StagingDirectory,
-}
 
 pub(crate) fn native_version(version: &Version) -> Result<String, BundleAcquisitionError> {
     let parts: Vec<_> = version.pre.as_str().split('.').collect();
@@ -42,177 +25,59 @@ pub(crate) fn native_version(version: &Version) -> Result<String, BundleAcquisit
     Ok(format!("{}-1", version.to_string().replacen('-', "~", 1)))
 }
 
-fn asset_name(version: &Version) -> Result<String, BundleAcquisitionError> {
+pub(super) fn asset_name(version: &Version) -> Result<String, BundleAcquisitionError> {
     Ok(format!("lg-buddy_{}_amd64.deb", native_version(version)?))
 }
 
-fn resolve_with<S: GitHubSource>(
-    release: &ReleaseInfo,
-    source: &S,
-) -> Result<ResolvedRelease, BundleAcquisitionError> {
-    let release = fresh_release_with(release, source)?;
-    select_named_release_assets(&release, &asset_name(release.version())?)?;
-    let identity = resolve_tag_identity(&release, source)?;
-    Ok(ResolvedRelease { release, identity })
-}
+pub(crate) use super::native_package::VerifiedNativePackage as VerifiedDebianPackage;
+use super::native_package::{self, NativeFormat};
 
 pub(crate) fn resolve_identity(
     release: &ReleaseInfo,
 ) -> Result<ReleaseIdentity, BundleAcquisitionError> {
-    resolve_with(release, &UreqGitHubSource::new()).map(|resolved| resolved.identity)
+    native_package::resolve_identity(NativeFormat::Debian, release)
 }
-
 pub(crate) fn acquire(
     release: &ReleaseInfo,
 ) -> Result<VerifiedDebianPackage, BundleAcquisitionError> {
-    acquire_with(
-        release,
-        &acquisition_cache_root_from_env()?,
-        &UreqGitHubSource::new(),
-    )
+    native_package::acquire(NativeFormat::Debian, release)
 }
-
+pub(crate) fn receive(
+    expected: &ReleaseIdentity,
+    input: impl Read,
+    cache: &Path,
+) -> Result<native_package::RootNativePackage, BundleAcquisitionError> {
+    native_package::receive(NativeFormat::Debian, expected, input, cache)
+}
+#[cfg(test)]
+fn resolve_with<S: GitHubSource>(
+    release: &ReleaseInfo,
+    source: &S,
+) -> Result<ResolvedRelease, BundleAcquisitionError> {
+    native_package::resolve_with(NativeFormat::Debian, release, source)
+}
+#[cfg(test)]
 fn acquire_with<S: GitHubSource>(
     release: &ReleaseInfo,
     cache: &Path,
     source: &S,
 ) -> Result<VerifiedDebianPackage, BundleAcquisitionError> {
-    let staging = StagingDirectory::create(cache)?;
-    let resolved = resolve_with(release, source)?;
-    let selected =
-        select_named_release_assets(&resolved.release, &asset_name(resolved.release.version())?)?;
-    verify_published_digest(source, &staging, &selected)?;
-    let path = staging.path.join(selected.archive.name());
-    let downloaded = source.download_asset(selected.archive, &path, MAX_ARCHIVE_BYTES)?;
-    pin_download_file(&path, &downloaded.file)?;
-    verify_download(selected.archive, &downloaded.facts)?;
-    verify_package(&downloaded.file, &resolved.identity)?;
-    Ok(VerifiedDebianPackage {
-        identity: resolved.identity,
-        file: downloaded.file,
-        _staging: staging,
-    })
+    native_package::acquire_with(NativeFormat::Debian, release, cache, source)
 }
-
-fn verify_published_digest<S: GitHubSource>(
-    source: &S,
-    staging: &StagingDirectory,
-    selected: &SelectedAssets<'_>,
-) -> Result<(), BundleAcquisitionError> {
-    let path = staging.path.join(CHECKSUM_ASSET_NAME);
-    let checksum = source.download_asset(selected.checksum, &path, MAX_CHECKSUM_BYTES)?;
-    pin_download_file(&path, &checksum.file)?;
-    verify_download(selected.checksum, &checksum.facts)?;
-    let published = published_archive_digest(&checksum.file, selected.archive.name())?;
-    if published != required_github_digest(selected.archive)? {
-        return Err(BundleAcquisitionError::Checksum(
-            "Debian package and published checksum disagree".into(),
-        ));
-    }
-    Ok(())
-}
-
-/// Reobserve the official release under privilege, then receive only the exact
-/// published bytes into a root-owned staging directory. No caller file path or
-/// caller-provided digest grants authority to APT.
-pub(crate) fn receive(
-    expected: &ReleaseIdentity,
-    input: impl Read,
-    cache: &Path,
-) -> Result<RootDebianPackage, BundleAcquisitionError> {
-    receive_with(expected, input, cache, &UreqGitHubSource::new())
-}
-
+#[cfg(test)]
 fn receive_with<S: GitHubSource>(
     expected: &ReleaseIdentity,
     input: impl Read,
     cache: &Path,
     source: &S,
-) -> Result<RootDebianPackage, BundleAcquisitionError> {
-    let selected_release = ReleaseInfo::from_github(
-        expected.version().clone(),
-        expected.channel(),
-        format!(
-            "https://github.com/{REPOSITORY_OWNER}/{REPOSITORY_NAME}/releases/tag/{}",
-            expected.release_tag()
-        ),
-        expected.release_tag().to_string(),
-        vec![],
-    );
-    let staging = StagingDirectory::create(cache)?;
-    let resolved = resolve_with(&selected_release, source)?;
-    if resolved.identity != *expected {
-        return Err(BundleAcquisitionError::ReleaseMetadata(
-            "Debian release changed after confirmation".into(),
-        ));
-    }
-    let selected =
-        select_named_release_assets(&resolved.release, &asset_name(expected.version())?)?;
-    verify_published_digest(source, &staging, &selected)?;
-    let path = staging.path.join(selected.archive.name());
-    let mut file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&path)?;
-    let mut reader = input.take(selected.archive.size() + 1);
-    let mut hasher = Sha256::new();
-    let mut bytes = 0;
-    let mut buffer = [0u8; 8192];
-    loop {
-        let count = reader.read(&mut buffer)?;
-        if count == 0 {
-            break;
-        }
-        file.write_all(&buffer[..count])?;
-        hasher.update(&buffer[..count]);
-        bytes += count as u64;
-    }
-    verify_download(
-        selected.archive,
-        &DownloadFacts {
-            bytes,
-            sha256: format!("{:x}", hasher.finalize()),
-        },
-    )?;
-    file.flush()?;
-    verify_package(&file, expected)?;
-    Ok(RootDebianPackage {
-        path,
-        _staging: staging,
-    })
+) -> Result<native_package::RootNativePackage, BundleAcquisitionError> {
+    native_package::receive_with(NativeFormat::Debian, expected, input, cache, source)
 }
-
 fn decode(file: &File, arguments: &[&str], limit: u64) -> Result<Vec<u8>, BundleAcquisitionError> {
-    let mut child = Command::new("/usr/bin/dpkg-deb")
-        .args(arguments)
-        .current_dir("/")
-        .env_clear()
-        .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
-        .env("LC_ALL", "C")
-        .stdin(Stdio::from(rewind_clone(file)?))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()?;
-    let mut bytes = Vec::new();
-    let read = child
-        .stdout
-        .take()
-        .unwrap()
-        .take(limit + 1)
-        .read_to_end(&mut bytes);
-    if read.is_err() || bytes.len() as u64 > limit {
-        let _ = child.kill();
-    }
-    let status = child.wait()?;
-    read?;
-    if bytes.len() as u64 > limit || !status.success() {
-        return Err(BundleAcquisitionError::Archive(
-            "dpkg-deb failed or exceeded the Debian payload limit".into(),
-        ));
-    }
-    Ok(bytes)
+    native_package::decode(file, "/usr/bin/dpkg-deb", arguments, limit)
+}
+fn verify_data(data: &[u8], expected: &ReleaseIdentity) -> Result<(), BundleAcquisitionError> {
+    native_package::verify_data(data, expected).map(|_| ())
 }
 
 pub(crate) fn verify_package(
@@ -260,72 +125,6 @@ fn verify_control(data: &[u8]) -> Result<(), BundleAcquisitionError> {
                 "Debian control metadata contains links, duplicates or package-owned configuration",
             ));
         }
-    }
-    Ok(())
-}
-
-fn verify_data(data: &[u8], expected: &ReleaseIdentity) -> Result<(), BundleAcquisitionError> {
-    let mut archive = Archive::new(Cursor::new(data));
-    let mut seen = HashSet::new();
-    let mut binaries = HashSet::new();
-    for entry in archive.entries().map_err(archive_error)? {
-        let mut entry = entry.map_err(archive_error)?;
-        let kind = entry.header().entry_type();
-        let mode = entry.header().mode().map_err(archive_error)?;
-        if !matches!(kind, EntryType::Regular | EntryType::Directory)
-            || entry.header().uid().map_err(archive_error)? != 0
-            || entry.header().gid().map_err(archive_error)? != 0
-            || !matches!(mode, 0o644 | 0o755)
-            || (kind == EntryType::Directory && mode != 0o755)
-        {
-            return Err(archive_error(
-                "Debian payload has unsafe types, owners or modes",
-            ));
-        }
-        let raw = entry.path_bytes();
-        let raw = raw.strip_prefix(b"./").unwrap_or(&raw);
-        if raw.is_empty() || raw == b"." {
-            if kind == EntryType::Directory {
-                continue;
-            }
-            return Err(archive_error("Debian root entry is not a directory"));
-        }
-        let path = normalize_archive_path(raw, kind)?;
-        if seen.len() >= MAX_ARCHIVE_ENTRIES
-            || !seen.insert(path.clone())
-            || !(path == "usr" || path.starts_with("usr/"))
-            || path == "usr/lib/lg-buddy/config-path"
-            || entry.size() > MAX_ARCHIVE_FILE_BYTES
-        {
-            return Err(archive_error(format!(
-                "unsafe Debian payload entry: {path}"
-            )));
-        }
-        if path == "usr/bin/lg-buddy" || path == "usr/bin/lg-buddy-gui" {
-            if kind != EntryType::Regular || entry.header().mode().map_err(archive_error)? != 0o755
-            {
-                return Err(archive_error("Debian binary must be a regular executable"));
-            }
-            let mut bytes = Vec::new();
-            entry.read_to_end(&mut bytes)?;
-            let mut identity = expected.clone();
-            if path.ends_with("-gui") {
-                identity.target = GUI_TARGET.into();
-            }
-            if parse_embedded_binary_identity(&bytes, identity.target(), identity.release_tag())?
-                != identity
-            {
-                return Err(BundleAcquisitionError::Binary(
-                    "Debian binary identity disagrees with release".into(),
-                ));
-            }
-            binaries.insert(path);
-        }
-    }
-    if binaries.len() != 2 {
-        return Err(archive_error(
-            "Debian package must contain both release binaries",
-        ));
     }
     Ok(())
 }

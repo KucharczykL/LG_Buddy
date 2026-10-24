@@ -53,6 +53,8 @@ jobs:
           print(executables[0])')"
           # Owner subprocesses must reach the binary even if the checkout's
           # parent directories are private to the runner account.
+          install -m 755 "$test_binary" target/native-package-tests
+          strip --strip-debug target/native-package-tests
           privileged_test_dir="$(mktemp -d)"
           trap 'rm -rf "$privileged_test_dir"' EXIT
           chmod 755 "$privileged_test_dir"
@@ -68,6 +70,13 @@ jobs:
             "$test_binary" --list --format=terse | grep -Fx "$test: test"
             sudo env TMPDIR="$privileged_test_dir" "$test_binary" "$test" --exact
           done
+
+      - name: Save native package verification tests
+        uses: actions/upload-artifact@v6
+        with:
+          name: ci-native-package-tests
+          path: target/native-package-tests
+          if-no-files-found: error
 
       - name: Install GTK test prerequisites
         run: |
@@ -145,8 +154,30 @@ jobs:
       - name: Validate Debian package input contract
         run: python3 scripts/test_build_debian_package.py
 
+      - name: Validate RPM package input contract
+        run: python3 scripts/test_build_rpm_package.py
+
       - name: Validate GitHub response recorder
         run: python3 scripts/test_record_github_release_responses.py
+
+      - name: Build GUI journey fixtures
+        env:
+          LG_BUDDY_BUILD_COMMIT: ${{ github.sha }}
+          LG_BUDDY_RELEASE_VERSION: "0.0.0"
+        run: |
+          # Reuse the GNU debug graph already built by the Rust/GTK checks.
+          # The release bundle job only needs its optimized target graphs.
+          cargo build --locked -p lg-buddy -p lg-buddy-gui --features gui-test-fixtures --bins --example gui_journey_tv
+          mkdir -p target/gui-journey-fixtures
+          cp target/debug/lg-buddy target/debug/lg-buddy-gui target/debug/examples/gui_journey_tv target/gui-journey-fixtures/
+
+      - name: Upload GUI journey fixtures for supported-distro checks
+        uses: actions/upload-artifact@v6
+        with:
+          name: ci-gui-journey-fixtures
+          path: target/gui-journey-fixtures/*
+          if-no-files-found: error
+          retention-days: 7
 
   debian-package:
     runs-on: ubuntu-24.04
@@ -201,6 +232,74 @@ jobs:
         run: |
           python3 scripts/test-debian-update.py \
             --archive dist/*.tar.gz --package dist/*-1_amd64.deb \
+            --runtime-fixture updater-fixtures/lg-buddy \
+            --gui-fixture updater-fixtures/lg-buddy-gui
+
+  rpm-package:
+    runs-on: ubuntu-24.04
+    container: fedora:43
+    timeout-minutes: 20
+    needs: bundle-build
+    steps:
+      - name: Install RPM build and smoke prerequisites
+        run: |
+          dnf5 install -y --setopt=install_weak_deps=False binutils dbus-daemon dbus-tools dejavu-sans-fonts diffutils findutils git gtk4 libadwaita polkit procps-ng python3 python3-rpm rpm-build shadow-utils sudo systemd tar util-linux xdotool xorg-x11-server-Xvfb xorg-x11-xauth
+
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Download verified release bundle
+        uses: actions/download-artifact@v7
+        with:
+          name: ci-release-bundle
+          path: dist
+
+      - name: Download updater transport fixtures
+        uses: actions/download-artifact@v7
+        with:
+          name: ci-gui-journey-fixtures
+          path: updater-fixtures
+
+      - name: Download native verification tests
+        uses: actions/download-artifact@v7
+        with:
+          name: ci-native-package-tests
+          path: native-tests
+
+      - name: Verify RPM acquisition and privileged receipt
+        run: |
+          chmod 755 native-tests/native-package-tests
+          native-tests/native-package-tests release_bundle::rpm:: --nocapture
+
+      - name: Verify native RPM version ordering and package inputs
+        run: python3 scripts/test_build_rpm_package.py
+
+      - name: Build reproducible RPM packages
+        shell: bash
+        run: |
+          archive=(dist/*.tar.gz)
+          test "${#archive[@]}" = 1
+          epoch="$(git -c safe.directory="$GITHUB_WORKSPACE" show -s --format=%ct HEAD)"
+          python3 scripts/test-rpm-optional-dependencies.py --archive "${archive[0]}" --source-date-epoch "$epoch"
+          python3 scripts/build_rpm_package.py --archive "${archive[0]}" --source-date-epoch "$epoch" --output-dir dist
+          python3 scripts/build_rpm_package.py --archive "${archive[0]}" --source-date-epoch "$epoch" --output-dir dist --revision 2
+          python3 scripts/build_rpm_package.py --archive "${archive[0]}" --source-date-epoch "$epoch" --output-dir reproducible --revision 2
+          cmp dist/*-2.x86_64.rpm reproducible/*-2.x86_64.rpm
+
+      - name: Verify native RPM lifecycle and startup migration
+        shell: bash
+        env:
+          LG_BUDDY_DISPOSABLE_PACKAGE_TEST: "1"
+        run: bash scripts/test-rpm-package.sh dist/*-1.x86_64.rpm dist/*-2.x86_64.rpm
+
+      - name: Verify DNF update handoff
+        shell: bash
+        env:
+          LG_BUDDY_DISPOSABLE_PACKAGE_TEST: "1"
+        run: |
+          chmod 755 updater-fixtures/*
+          python3 scripts/test-debian-update.py --format rpm \
+            --archive dist/*.tar.gz --package dist/*-1.x86_64.rpm \
             --runtime-fixture updater-fixtures/lg-buddy \
             --gui-fixture updater-fixtures/lg-buddy-gui
 
@@ -261,30 +360,11 @@ jobs:
           umask 0002
           ./scripts/build-release-bundle.sh --target x86_64-unknown-linux-musl --gui-target x86_64-unknown-linux-gnu --version "$SMOKE_VERSION" --output-dir dist --require-kwin-matrix
 
-      - name: Build GUI journey fixtures
-        env:
-          LG_BUDDY_BUILD_COMMIT: ${{ github.sha }}
-          LG_BUDDY_RELEASE_VERSION: "0.0.0"
-        run: |
-          # The fixture shares the GNU debug dependency graph and glibc floor
-          # of the GUI pair tested on Ubuntu, Fedora and Arch.
-          cargo build --locked -p lg-buddy -p lg-buddy-gui --features gui-test-fixtures --bins --example gui_journey_tv
-          mkdir -p target/gui-journey-fixtures
-          cp target/debug/lg-buddy target/debug/lg-buddy-gui target/debug/examples/gui_journey_tv target/gui-journey-fixtures/
-
       - name: Upload bundle for supported-distro checks
         uses: actions/upload-artifact@v6
         with:
           name: ci-release-bundle
           path: dist/*.tar.gz
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Upload GUI journey fixtures for supported-distro checks
-        uses: actions/upload-artifact@v6
-        with:
-          name: ci-gui-journey-fixtures
-          path: target/gui-journey-fixtures/*
           if-no-files-found: error
           retention-days: 7
 
@@ -422,19 +502,20 @@ jobs:
   bundle-smoke-test:
     runs-on: ubuntu-24.04
     timeout-minutes: 2
-    needs: [bundle-build, bundle-smoke-suites, debian-package]
+    needs: [bundle-build, bundle-smoke-suites, debian-package, rpm-package]
     # Keep the required check failing when production or any suite fails,
     # times out, or is skipped, even after an upstream failure.
     if: ${{ always() }}
     steps:
-      - name: Require every bundle and Debian smoke suite to pass
+      - name: Require every bundle and native package smoke suite to pass
         env:
           BUILD_RESULT: ${{ needs.bundle-build.result }}
           SMOKE_RESULT: ${{ needs.bundle-smoke-suites.result }}
           DEBIAN_RESULT: ${{ needs.debian-package.result }}
+          RPM_RESULT: ${{ needs.rpm-package.result }}
         run: |
-          if [ "$BUILD_RESULT" != success ] || [ "$SMOKE_RESULT" != success ] || [ "$DEBIAN_RESULT" != success ]; then
-            echo "Bundle build: $BUILD_RESULT; smoke suites: $SMOKE_RESULT; Debian package: $DEBIAN_RESULT" >&2
+          if [ "$BUILD_RESULT" != success ] || [ "$SMOKE_RESULT" != success ] || [ "$DEBIAN_RESULT" != success ] || [ "$RPM_RESULT" != success ]; then
+            echo "Bundle build: $BUILD_RESULT; smoke suites: $SMOKE_RESULT; Debian package: $DEBIAN_RESULT; RPM package: $RPM_RESULT" >&2
             exit 1
           fi
 
