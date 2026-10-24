@@ -315,6 +315,7 @@ jobs:
 
       - name: Fetch and revalidate release refs
         run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git fetch --force origin \
               +refs/heads/main:refs/remotes/origin/main \
               +refs/heads/prerelease:refs/remotes/origin/prerelease \
@@ -441,6 +442,7 @@ jobs:
 
       - name: Fetch and revalidate release refs
         run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git fetch --force origin \
               +refs/heads/main:refs/remotes/origin/main \
               +refs/heads/prerelease:refs/remotes/origin/prerelease \
