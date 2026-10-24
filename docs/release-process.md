@@ -138,7 +138,7 @@ The workflow:
 13. For prereleases, exercises production GitHub discovery, acquisition,
     confirmation, installation, and final identity from the pinned baseline.
 14. Exercises public native-package updates on Ubuntu/Fedora and a public
-    v1.8 bundle upgrade followed by installed GTK and owner-daemon startup.
+    v1.8 bundle upgrade followed by installed GUI startup conversion.
 
 `install.sh` is only an installer. It does not build the runtime or GUI.
 
