@@ -39,6 +39,12 @@ def debian_version(version: str, revision: int = 1) -> str:
     return version.replace("-", "~", 1) + f"-{revision}"
 
 
+def asset_name(version: str, revision: int = 1) -> str:
+    # GitHub normalizes '~' on upload; native metadata still retains it.
+    portable = debian_version(version, revision).replace("~", "-")
+    return f"lg-buddy_{portable}_amd64.deb"
+
+
 def stage_payload(archive: Path, root: Path) -> ReleaseIdentity:
     return _stage_payload(
         archive, root, license_path="usr/share/doc/lg-buddy/copyright",
@@ -99,7 +105,7 @@ def build(archive: Path, output_dir: Path, epoch: int, revision: int = 1) -> Pat
         root.chmod(0o755)
         os.utime(root, (epoch, epoch))
         output_dir.mkdir(parents=True, exist_ok=True)
-        output = output_dir / f"lg-buddy_{version}_amd64.deb"
+        output = output_dir / asset_name(identity.version, revision)
         # Publish only a completed package. Build twice to the same output safely.
         candidate = work / output.name
         subprocess.run(

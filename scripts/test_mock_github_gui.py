@@ -115,7 +115,7 @@ class MockGitHubGuiTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("mock_github_gui", SERVER)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        package = Path(self.directory.name) / "lg-buddy_1.7.0~beta.1-1_amd64.deb"
+        package = Path(self.directory.name) / "lg-buddy_1.7.0-beta.1-1_amd64.deb"
         content = b"native package fixture bytes"
         package.write_bytes(content)
         fixture = module.Fixture(self.archive, self.state, None, "0.0.0", package)
