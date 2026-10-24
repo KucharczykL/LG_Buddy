@@ -37,6 +37,12 @@ def rpm_version(version: str, revision: int = 1) -> str:
     return version.replace("-", "~", 1) + f"-{revision}"
 
 
+def asset_name(version: str, revision: int = 1) -> str:
+    # Keep the native '~' ordering inside the RPM, not its GitHub asset name.
+    portable = rpm_version(version, revision).replace("~", "-")
+    return f"lg-buddy-{portable}.x86_64.rpm"
+
+
 def render_spec(root: Path, version: str) -> str:
     upstream, revision = version.rsplit("-", 1)
     files = sorted(path for path in root.rglob("*") if path.is_file())
@@ -107,7 +113,7 @@ def build(archive: Path, output_dir: Path, epoch: int, revision: int = 1) -> Pat
         name = f"lg-buddy-{version}.x86_64.rpm"
         candidate = work / "RPMS/x86_64" / name
         output_dir.mkdir(parents=True, exist_ok=True)
-        output = output_dir / name
+        output = output_dir / asset_name(identity.version, revision)
         with tempfile.NamedTemporaryFile(dir=output_dir, prefix=".lg-buddy-", delete=False) as staged:
             staged_path = Path(staged.name)
             try:

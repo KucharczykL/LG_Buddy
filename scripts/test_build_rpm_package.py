@@ -6,7 +6,7 @@ from __future__ import annotations
 import unittest
 
 import test_build_debian_package as debian_tests
-from build_rpm_package import LICENSE, render_spec, rpm_version
+from build_rpm_package import LICENSE, asset_name, render_spec, rpm_version
 from package_payload import PackageError, stage_payload
 from release_promotion import SemVer
 
@@ -17,6 +17,11 @@ except ImportError:
 
 
 class VersionTests(unittest.TestCase):
+    def test_asset_names_are_portable_without_changing_native_versions(self) -> None:
+        self.assertEqual(asset_name("2.0.0-beta.2.ci", 2), "lg-buddy-2.0.0-beta.2.ci-2.x86_64.rpm")
+        self.assertEqual(asset_name("2.0.0"), "lg-buddy-2.0.0-1.x86_64.rpm")
+        self.assertEqual(rpm_version("2.0.0-beta.2.ci", 2), "2.0.0~beta.2.ci-2")
+
     def test_native_versions_and_packaging_revisions(self) -> None:
         self.assertEqual(rpm_version("2.0.0"), "2.0.0-1")
         self.assertEqual(rpm_version("2.0.0-beta.2.ci", 2), "2.0.0~beta.2.ci-2")

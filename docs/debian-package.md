@@ -20,7 +20,7 @@ links, duplicate members and missing required assets refuse packaging.
 
 ```bash
 python3 scripts/build_debian_package.py \
-  --archive dist/lg-buddy-2.0.0-beta.1-x86_64-unknown-linux-musl.tar.gz \
+  --archive dist/lg-buddy-2.0.0-beta.3-x86_64-unknown-linux-musl.tar.gz \
   --source-date-epoch "$SOURCE_DATE_EPOCH" \
   --output-dir dist
 ```
@@ -33,7 +33,9 @@ the polkit authorization tools. Optional KWin sources/prebuilts and GNOME
 extension assets are included without requiring those desktops or a compiler.
 Python is a build/test dependency only.
 
-The example produces `lg-buddy_2.0.0~beta.1-1_amd64.deb`. Stable `2.0.0` becomes
+The example produces `lg-buddy_2.0.0-beta.3-1_amd64.deb`. The filename uses
+upstream SemVer because GitHub rewrites `~` on upload; native package metadata
+retains `2.0.0~beta.3-1` for correct prerelease ordering. Stable `2.0.0` becomes
 `2.0.0-1`; `--revision 2` permits a packaging-only revision of the same upstream
 release. Supported prereleases are `alpha`, `beta` or `rc`, optionally followed
 by `.N` and `.ci` (`beta.2`, `rc.1`, `beta.2.ci`). Other prerelease forms and
@@ -47,7 +49,7 @@ later local packaging revisions are installed manually through APT.
 
 `lg-buddy updates install` and the GUI share the saved channel, discovery,
 confirmation and result verification. A healthy `lg-buddy` Debian installation
-acquires `lg-buddy_<native-version>_amd64.deb`; bundles retain their existing
+acquires `lg-buddy_<release-version>-1_amd64.deb`; bundles retain their existing
 installer. Other owners, incomplete/held packages, conflicting ownership,
 managed hosts and unsafe/read-only paths refuse automatic native installation.
 
@@ -74,7 +76,7 @@ inspect and repair native package state before retrying. Installing a local
 Install the local package through APT:
 
 ```bash
-sudo apt install ./dist/lg-buddy_2.0.0~beta.1-1_amd64.deb
+sudo apt install ./dist/lg-buddy_2.0.0-beta.3-1_amd64.deb
 lg-buddy
 ```
 
@@ -112,8 +114,8 @@ to compare bytes, then runs the real APT/dpkg lifecycle in a disposable Ubuntu
 
 ```bash
 LG_BUDDY_DISPOSABLE_PACKAGE_TEST=1 bash scripts/test-debian-package.sh \
-  /packages/lg-buddy_2.0.0~beta.1-1_amd64.deb \
-  /packages/lg-buddy_2.0.0~beta.1-2_amd64.deb
+  /packages/lg-buddy_2.0.0-beta.3-1_amd64.deb \
+  /packages/lg-buddy_2.0.0-beta.3-2_amd64.deb
 ```
 
 The smoke checks conflicts, install, a local package upgrade, reinstall,

@@ -14,7 +14,7 @@ from pathlib import Path
 
 from build_debian_package import (
     GUI_TARGET, ICON, POLICY, SYSTEM_UNITS, USER_UNITS,
-    PackageError, debian_version, stage_payload,
+    PackageError, asset_name, debian_version, stage_payload,
 )
 from release_bundle_manifest import ManifestError, ReleaseIdentity, render_manifest
 from release_promotion import SemVer
@@ -66,6 +66,11 @@ def archive_fixture(directory: Path, members: dict[str, bytes], *, extra: tarfil
 
 
 class VersionTests(unittest.TestCase):
+    def test_asset_names_are_portable_without_changing_native_versions(self) -> None:
+        self.assertEqual(asset_name("2.0.0-beta.2.ci", 2), "lg-buddy_2.0.0-beta.2.ci-2_amd64.deb")
+        self.assertEqual(asset_name("2.0.0"), "lg-buddy_2.0.0-1_amd64.deb")
+        self.assertEqual(debian_version("2.0.0-beta.2.ci", 2), "2.0.0~beta.2.ci-2")
+
     def test_native_versions_and_packaging_revisions(self) -> None:
         self.assertEqual(debian_version("2.0.0"), "2.0.0-1")
         self.assertEqual(debian_version("2.0.0-beta.2.ci", 2), "2.0.0~beta.2.ci-2")

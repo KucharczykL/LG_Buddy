@@ -18,7 +18,7 @@ archive scripts or the bundle installer.
 
 ```bash
 python3 scripts/build_rpm_package.py \
-  --archive dist/lg-buddy-2.0.0-beta.1-x86_64-unknown-linux-musl.tar.gz \
+  --archive dist/lg-buddy-2.0.0-beta.3-x86_64-unknown-linux-musl.tar.gz \
   --source-date-epoch "$SOURCE_DATE_EPOCH" \
   --output-dir dist
 ```
@@ -31,7 +31,9 @@ and compression settings using RPM's
 It emits RPM v6 and preserves the already-built release binaries without
 stripping or rewriting them.
 
-The example produces `lg-buddy-2.0.0~beta.1-1.x86_64.rpm`. Stable `2.0.0` becomes
+The example produces `lg-buddy-2.0.0-beta.3-1.x86_64.rpm`. The filename uses
+upstream SemVer because GitHub rewrites `~` on upload; native package metadata
+retains `2.0.0~beta.3-1` for correct prerelease ordering. Stable `2.0.0` becomes
 `2.0.0-1`; `--revision 2` makes a packaging-only release. Supported prereleases
 are `alpha`, `beta` or `rc`, optionally followed by `.N` and then `.ci`.
 Build metadata and other prerelease forms are refused. In particular,
@@ -50,7 +52,7 @@ installed as `%license` under `/usr/share/licenses/lg-buddy/`.
 ## Install and retain configuration
 
 ```bash
-sudo dnf5 install ./dist/lg-buddy-2.0.0~beta.1-1.x86_64.rpm
+sudo dnf5 install ./dist/lg-buddy-2.0.0-beta.3-1.x86_64.rpm
 lg-buddy
 ```
 
@@ -113,8 +115,8 @@ Docker and `LG_BUDDY_DISPOSABLE_PACKAGE_TEST=1`:
 
 ```bash
 LG_BUDDY_DISPOSABLE_PACKAGE_TEST=1 bash scripts/test-rpm-package.sh \
-  /packages/lg-buddy-2.0.0~beta.1-1.x86_64.rpm \
-  /packages/lg-buddy-2.0.0~beta.1-2.x86_64.rpm
+  /packages/lg-buddy-2.0.0-beta.3-1.x86_64.rpm \
+  /packages/lg-buddy-2.0.0-beta.3-2.x86_64.rpm
 ```
 
 Checks cover conflicts, install, local packaging-release upgrade, reinstall,

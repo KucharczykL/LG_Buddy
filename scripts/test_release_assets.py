@@ -83,6 +83,14 @@ def decoder_fixtures(directory: Path) -> str:
 
 
 class AssetTests(unittest.TestCase):
+    def test_prerelease_download_names_are_github_portable(self):
+        self.assertEqual(asset_names('2.0.0-beta.2'), (
+            'lg-buddy-2.0.0-beta.2-x86_64-unknown-linux-musl.tar.gz',
+            'lg-buddy_2.0.0-beta.2-1_amd64.deb',
+            'lg-buddy-2.0.0-beta.2-1.x86_64.rpm',
+            'sha256sums.txt',
+        ))
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
