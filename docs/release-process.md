@@ -11,10 +11,9 @@ The intended ancestry is `main <= prerelease <= dev`. Ordinary changes merge
 into `dev`. An official release requires a promotion PR whose head is the
 same-repository `dev` branch and whose base is `main` or `prerelease`.
 
-The [package ownership contract](package-ownership.md) defines the common
-Debian/RPM layout, activation, update identity and retention requirements.
-Debian and RPM delivery are qualified under #134/#135. The release workflow
-builds and verifies both packages alongside the release bundle under #136.
+The release workflow builds and verifies Debian and RPM packages from the same
+release bundle. Local build and test commands are in the
+[development guide](development.md#native-packages).
 
 ## Promotion contract
 
@@ -61,7 +60,7 @@ There is no separate version input.
 5. The resulting push starts the serialized release workflow, which builds and
    smoke-tests the merged release commit without write credentials, including
    an archive-driven upgrade from the pinned public baseline. Ubuntu 24.04 and
-   Fedora 43 build the Debian and RPM packages from that same verified bundle.
+   Fedora 44 build the Debian and RPM packages from that same verified bundle.
    Both run the real package lifecycle/startup smoke on those release bytes;
    revision 2 is a private upgrade fixture and is not published. Assembly
    verifies every format's metadata and embedded binary identities
@@ -156,12 +155,19 @@ remains `2.0.0~beta.3-1`, preserving native prerelease ordering. Separating thes
 forms avoids GitHub's [asset filename normalization](https://docs.github.com/en/rest/releases/assets#upload-a-release-asset),
 which rewrites `~` during upload.
 
+Official native releases support stable versions and `alpha`, `beta` or `rc`
+prereleases, optionally followed by `.N` and then `.ci`. Promotion refuses
+build metadata and forms whose Debian/RPM ordering could disagree with SemVer.
+Published packages use revision `1`; `--revision 2` is for local packaging-only
+upgrade tests and is installed manually. Both binaries retain the upstream
+version/channel/commit identity independently of that packaging revision.
+
 `scripts/release_assets.py` derives this inventory from the reviewed version.
 It rejects missing/unexpected assets and incomplete, duplicate or mismatched
 checksums. Non-installing native tools inspect package metadata and payloads;
 both executables and each package manifest must match the bundle's exact
 version, channel, target and commit. Verification never executes package
-scriptlets or candidate binaries. Fedora 43 provides RPM 6 decoding and Debian
+scriptlets or candidate binaries. Fedora 44 provides RPM 6 decoding and Debian
 decoding for assembly, draft staging and publication.
 
 Draft resumption uploads only missing expected assets. Existing assets must
@@ -177,7 +183,7 @@ download responses; its default still supports historical bundle-only releases.
 
 ## Public package and legacy canaries
 
-`production-native-canary` runs on Ubuntu 24.04 and Fedora 43 after both stable
+`production-native-canary` runs on Ubuntu 24.04 and Fedora 44 after both stable
 and prerelease publication. It selects an actual older published prerelease
 with the complete native asset set as test input. The installed application
 owns target discovery, confirmation, download, root revalidation and APT/DNF
@@ -193,8 +199,8 @@ update journey explicitly unqualified. Bootstrap is not evidence of a passing
 package update. Later prereleases qualify beta-to-beta, and a stable publication
 qualifies prerelease-to-stable. Existing older native releases without an
 eligible complete prerelease baseline cause a failure rather than a false
-bootstrap result. Public evidence for both package families and both journeys
-must exist before #136's production qualification is complete.
+bootstrap result. Release review requires public results for both package
+families and both update journeys.
 
 `production-v1-bundle-canary` independently downloads the pinned published
 `v1.8.0` bundle and the published candidate. The candidate's public asset
@@ -213,15 +219,30 @@ Xvfb/private session buses, synthetic retained credentials and no physical TV.
 The legacy check skips historical pip and service activation. Its converted and
 current GUI starts must show the same expected setup-required state because the
 isolated fixture has no running service; this is not service readiness evidence.
-These are public transport and product
-journey checks, separate from the real service-manager/polkit/reboot
-[Ubuntu](debian-vm-validation.md) and [Fedora](rpm-vm-validation.md) records.
+These check public transport and product update journeys. Native desktop
+qualification also exercises actual system/user service managers, polkit
+cancellation/acceptance, installed GUI handoff, reboot and retained data in
+disposable Ubuntu/Fedora desktop VMs. Record the source commit, environment,
+package identities and results with the release PR or CI artifacts.
 PR CI runs the same v1.8 installer/GTK/startup harness against its v2 candidate
 bundle, alongside the retained v1.4 historical upgrade suite. No historical
 release is republished or modified by these checks.
 
-The [implementation validation record](package-release-validation.md) separates
-local native/legacy checks from the outstanding published update journeys.
+### Fedora automatic-update baseline transition
+
+Fedora 44+ is the RPM automatic-update baseline; see the
+[support policy](../README.md#distribution-support). The known beta.3/beta.4
+helpers cannot replay newer DNF plans. For those exact baseline tag/commit
+pairs and a later prerelease, the public canary verifies a manual RPM upgrade
+and records `manual-transition`, `automatic_upgrade_qualified=false`. It never
+converts arbitrary update failures or stable-release qualification to this
+outcome. Once a newer baseline containing the fixed updater exists, the normal
+automatic journey is required.
+
+Before stable promotion, complete Fedora 44 desktop authorization, service and
+reboot checks, plus an automatic upgrade between two published releases with
+the fixed updater. Container checks, manual transitions and the historical
+Fedora 43 desktop run do not complete these release checks.
 
 ## Release bundle identity
 
@@ -253,7 +274,7 @@ Smoke validation checks the manifest before executing installer code and then
 compares it with both the bundled and installed binary. Publishing validates
 the manifest directly from each archive without extracting or executing archive
 content. CI builds on Ubuntu 24.04, establishing GTK 4.14, libadwaita 1.5, and
-a maximum GLIBC 2.39 symbol baseline. Fedora 43 and current Arch lanes install
+a maximum GLIBC 2.39 symbol baseline. Fedora 44 and current Arch lanes install
 and launch the same artifact under Xvfb, drive it without a pointer, inspect its
 AT-SPI tree, and compare its light/dark and 1x/2x rendering; Ubuntu remains the
 ABI baseline.

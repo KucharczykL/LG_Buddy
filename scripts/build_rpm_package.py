@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build an x86_64 RPM from a verified release bundle on Fedora 43."""
+"""Build an x86_64 RPM from a verified release bundle on Fedora 44."""
 
 from __future__ import annotations
 

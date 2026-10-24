@@ -251,7 +251,7 @@ jobs:
 
   rpm-package:
     runs-on: ubuntu-24.04
-    container: fedora:43
+    container: fedora:44
     timeout-minutes: 20
     needs: bundle-build
     steps:
@@ -323,9 +323,106 @@ jobs:
           path: dist/*-1.x86_64.rpm
           if-no-files-found: error
 
-  release-assets:
+  dnf-update-fedora44:
+    runs-on: ubuntu-24.04
+    container: fedora:44
+    timeout-minutes: 15
+    needs: rpm-package
+    steps:
+      - name: Install DNF replay and GUI prerequisites
+        run: dnf5 install -y --setopt=install_weak_deps=False binutils dbus-daemon dbus-tools dejavu-sans-fonts findutils git gtk4 libadwaita polkit procps-ng python3 rpm-build shadow-utils sudo systemd tar util-linux xdotool xorg-x11-server-Xvfb xorg-x11-xauth
+
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: ci-release-bundle
+          path: dist
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: ci-rpm-package
+          path: dist
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: ci-gui-journey-fixtures
+          path: updater-fixtures
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: ci-native-package-tests
+          path: native-tests
+
+      - name: Verify stored RPM signature enforcement
+        shell: bash
+        run: |
+          dnf5 download --destdir signature-fixtures libglvnd-gles.x86_64
+          signed=(signature-fixtures/*.rpm)
+          unsigned=(dist/*.rpm)
+          test "${#signed[@]}" = 1
+          test "${#unsigned[@]}" = 1
+          chmod 755 native-tests/native-package-tests
+          LG_BUDDY_TEST_SIGNED_RPM="$(realpath "${signed[0]}")" \
+            LG_BUDDY_TEST_UNSIGNED_RPM="$(realpath "${unsigned[0]}")" \
+            native-tests/native-package-tests rpm_update:: --nocapture
+
+      - name: Verify DNF update adds an absent repository dependency
+        shell: bash
+        env:
+          LG_BUDDY_DISPOSABLE_PACKAGE_TEST: "1"
+        run: |
+          rpm -q dnf5 libdnf5
+          chmod 755 updater-fixtures/*
+          python3 scripts/test-debian-update.py --format rpm \
+            --archive dist/*.tar.gz --package dist/*.rpm \
+            --runtime-fixture updater-fixtures/lg-buddy \
+            --gui-fixture updater-fixtures/lg-buddy-gui \
+            --expect-new-rpm-dependency libglvnd-gles
+
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: ci-fedora44-dnf-update
+          path: /home/lgdeb-update/update-*.output
+          if-no-files-found: warn
+
+  rpm-update-fedora43-refusal:
     runs-on: ubuntu-24.04
     container: fedora:43
+    timeout-minutes: 10
+    needs: rpm-package
+    steps:
+      - name: Install refusal-test prerequisites
+        run: dnf5 install -y --setopt=install_weak_deps=False binutils gtk4 libadwaita python3 rpm-build shadow-utils sudo util-linux
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v7
+        with:
+          name: ci-release-bundle
+          path: dist
+      - uses: actions/download-artifact@v7
+        with:
+          name: ci-rpm-package
+          path: dist
+      - uses: actions/download-artifact@v7
+        with:
+          name: ci-gui-journey-fixtures
+          path: updater-fixtures
+      - name: Require guidance before discovery, authorization or mutation
+        shell: bash
+        env:
+          LG_BUDDY_DISPOSABLE_PACKAGE_TEST: "1"
+        run: |
+          chmod 755 updater-fixtures/*
+          python3 scripts/test-debian-update.py --format rpm \
+            --archive dist/*.tar.gz --package dist/*.rpm \
+            --runtime-fixture updater-fixtures/lg-buddy \
+            --gui-fixture updater-fixtures/lg-buddy-gui \
+            --expect-unsupported-rpm-platform
+
+  release-assets:
+    runs-on: ubuntu-24.04
+    container: fedora:44
     timeout-minutes: 10
     needs: [bundle-build, debian-package, rpm-package]
     steps:
@@ -559,7 +656,7 @@ jobs:
   bundle-smoke-test:
     runs-on: ubuntu-24.04
     timeout-minutes: 2
-    needs: [bundle-build, bundle-smoke-suites, debian-package, rpm-package, release-assets]
+    needs: [bundle-build, bundle-smoke-suites, debian-package, rpm-package, dnf-update-fedora44, rpm-update-fedora43-refusal, release-assets]
     # Keep the required check failing when production or any suite fails,
     # times out, or is skipped, even after an upstream failure.
     if: ${{ always() }}
@@ -570,10 +667,12 @@ jobs:
           SMOKE_RESULT: ${{ needs.bundle-smoke-suites.result }}
           DEBIAN_RESULT: ${{ needs.debian-package.result }}
           RPM_RESULT: ${{ needs.rpm-package.result }}
+          DNF_RESULT: ${{ needs.dnf-update-fedora44.result }}
+          RPM_REFUSAL_RESULT: ${{ needs.rpm-update-fedora43-refusal.result }}
           ASSETS_RESULT: ${{ needs.release-assets.result }}
         run: |
-          if [ "$BUILD_RESULT" != success ] || [ "$SMOKE_RESULT" != success ] || [ "$DEBIAN_RESULT" != success ] || [ "$RPM_RESULT" != success ] || [ "$ASSETS_RESULT" != success ]; then
-            echo "Bundle build: $BUILD_RESULT; smoke suites: $SMOKE_RESULT; Debian package: $DEBIAN_RESULT; RPM package: $RPM_RESULT; release assets: $ASSETS_RESULT" >&2
+          if [ "$BUILD_RESULT" != success ] || [ "$SMOKE_RESULT" != success ] || [ "$DEBIAN_RESULT" != success ] || [ "$RPM_RESULT" != success ] || [ "$DNF_RESULT" != success ] || [ "$RPM_REFUSAL_RESULT" != success ] || [ "$ASSETS_RESULT" != success ]; then
+            echo "Bundle build: $BUILD_RESULT; smoke suites: $SMOKE_RESULT; Debian package: $DEBIAN_RESULT; RPM package: $RPM_RESULT; DNF update: $DNF_RESULT; Fedora 43 refusal: $RPM_REFUSAL_RESULT; release assets: $ASSETS_RESULT" >&2
             exit 1
           fi
 
@@ -585,8 +684,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: Fedora 43
-            image: fedora:43
+          - name: Fedora 44
+            image: fedora:44
             package_manager: dnf
             setup: dnf install -y at-spi2-core binutils curl dbus-x11 findutils glib2 gobject-introspection gsettings-desktop-schemas gtk4 gzip libadwaita libglvnd-gles polkit procps-ng python3 python3-dbus python3-pyatspi shadow-utils strace tar util-linux which xdotool xorg-x11-server-Xvfb xorg-x11-xauth xwd
           - name: Arch current

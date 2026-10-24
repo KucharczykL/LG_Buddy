@@ -97,6 +97,8 @@ def main() -> None:
     parser.add_argument("--package", type=Path)
     parser.add_argument("--runtime-fixture", type=Path)
     parser.add_argument("--gui-fixture", type=Path)
+    parser.add_argument("--expect-new-rpm-dependency", help="require this repository dependency to be absent before, and installed after, the update")
+    parser.add_argument("--expect-unsupported-rpm-platform", action="store_true")
     parser.add_argument("--drive", choices=("yes", "no"))
     parser.add_argument("--version", default="")
     parser.add_argument("--drive-output", type=Path)
@@ -165,6 +167,10 @@ cp {root}/usr/bin/* %{{buildroot}}/usr/bin/
                 baseline = work / "lg-buddy_0.0.0-1_amd64.deb"
                 checked("dpkg-deb", "--root-owner-group", "-Zgzip", "--build", str(root), str(baseline))
                 checked("apt-get", "install", "-y", "--no-install-recommends", str(baseline), env={**os.environ, "DEBIAN_FRONTEND": "noninteractive"})
+            if args.expect_new_rpm_dependency:
+                assert rpm
+                absent = subprocess.run(["rpm", "--query", args.expect_new_rpm_dependency], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                assert absent.returncode == 1, "expected a genuinely new repository dependency"
             checked("runuser", "-u", username, "--", "/usr/bin/lg-buddy", "settings", "set", "updates.channel", "prerelease")
             config = Path(user.pw_dir) / ".config/lg-buddy/config.env"
             token = config.parent / "tvs/primary/access-token.json"
@@ -188,6 +194,21 @@ cp {root}/usr/bin/* %{{buildroot}}/usr/bin/
             thread.start()
             environment = {**os.environ, "LG_BUDDY_TEST_GITHUB_ADDRESS": f"127.0.0.1:{server.server_address[1]}"}
             try:
+                if args.expect_unsupported_rpm_platform:
+                    assert rpm
+                    refused = subprocess.run(["runuser", "-u", username, "--", "/usr/bin/lg-buddy", "updates", "install"],
+                                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, timeout=30)
+                    assert refused.returncode != 0 and b"Fedora 44 or newer" in refused.stderr, (refused.stdout, refused.stderr)
+                    assert b"install it manually with DNF" in refused.stderr
+                    with args.package.open("rb") as stream:
+                        root_refused = subprocess.run(["/usr/bin/lg-buddy", protocol, str(facts["tag"]), str(facts["commit"])],
+                                                     stdin=stream, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, timeout=30)
+                    assert root_refused.returncode != 0 and b"Fedora 44 or newer" in root_refused.stderr, (root_refused.stdout, root_refused.stderr)
+                    assert b"mutation_started" not in root_refused.stdout
+                    assert not requests.exists(), "unsupported platform reached release HTTP transport"
+                    assert installed_version() == "0.0.0-1" and snapshot(retained) == before
+                    print("Fedora 43 automatic RPM update refusal passed: actionable CLI/root guidance, no release HTTP requests or mutation, retained data.")
+                    return
                 # Supplying bytes is insufficient authority: the root helper
                 # must independently verify the published digest before APT.
                 corrupt = work / "corrupt.deb"
@@ -223,6 +244,9 @@ cp {root}/usr/bin/* %{{buildroot}}/usr/bin/
                         assert not any("/releases/assets/" in line for line in recent), recent
                 expected_version = str(facts["version"]).replace("-", "~", 1) + "-1"
                 assert installed_version() == expected_version
+                if args.expect_new_rpm_dependency:
+                    print(checked("rpm", "--query", args.expect_new_rpm_dependency), end="", flush=True)
+                    assert not checked("rpm", "--verify", args.expect_new_rpm_dependency)
                 for binary in ("lg-buddy", "lg-buddy-gui"):
                     text = checked(f"/usr/bin/{binary}", "--version")
                     assert f'version: {facts["version"]}\n' in text and f'commit: {facts["commit"]}\n' in text
