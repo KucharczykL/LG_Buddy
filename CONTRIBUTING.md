@@ -105,4 +105,6 @@ Documentation changes should:
 
 - describe current behavior
 - avoid promising behavior that is not implemented
-- link to deeper docs instead of duplicating large sections
+- extend the existing guide for the intended audience before adding a file
+- give each instruction or rule one home and link to it
+- keep issue progress and test-run results in issues, PRs or CI artifacts

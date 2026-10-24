@@ -134,15 +134,9 @@ The resulting binary will be at:
 
 ## Install a Locally Built Binary
 
-For package-managed layouts, first-run activation and ownership boundaries,
-see the [package ownership contract](package-ownership.md). Debian/RPM delivery
-builds on that contract; the installer below remains the release-bundle path.
-The [Debian package development guide](debian-package.md) covers the local
-package builder, APT updater and isolated lifecycle checks. The
-[Ubuntu VM qualification](debian-vm-validation.md) records real desktop,
-service-manager, polkit and reboot coverage separately under #134.
-The [RPM package development guide](rpm-package.md) covers the Fedora 44
-package builder and isolated native lifecycle checks under #135.
+The installer below is for release-bundle layouts. For `.deb` and `.rpm`
+builds, use [Native packages](#native-packages). Package-managed first-run setup
+and configuration bindings are described in [onboarding](onboarding.md#package-owned-service-assets).
 
 `install.sh` is installer-only. It does not build the runtime or GUI.
 
@@ -177,21 +171,93 @@ the installation and user state unchanged; a later I/O failure still follows
 the existing partial-upgrade recovery contract. Existing shared directories
 are reused without changing their modes.
 
+## Native packages
+
+Both builders stage the same verified release bundle, including its exact
+runtime/GUI identity and optional desktop integration assets. They validate
+archive paths, types and metadata without running archive scripts. Build on
+the appropriate baseline so native dependency metadata matches that system:
+
+- **Ubuntu 24.04:** `python3`, `dpkg-dev`, `libgtk-4-1` and `libadwaita-1-0`.
+- **Fedora 44:** `python3` and `rpm-build`.
+
+Set `SOURCE_DATE_EPOCH` to the release source commit's Unix timestamp. Run the
+appropriate command against the bundle built from that commit:
+
+```bash
+# Ubuntu
+python3 scripts/build_debian_package.py \
+  --archive dist/lg-buddy-2.0.0-beta.4-x86_64-unknown-linux-musl.tar.gz \
+  --source-date-epoch "$SOURCE_DATE_EPOCH" --output-dir dist
+
+# Fedora
+python3 scripts/build_rpm_package.py \
+  --archive dist/lg-buddy-2.0.0-beta.4-x86_64-unknown-linux-musl.tar.gz \
+  --source-date-epoch "$SOURCE_DATE_EPOCH" --output-dir dist
+```
+
+Repeating a build with identical input, tools, dependency database and timestamp
+must produce identical bytes. Both recipes derive library dependencies from
+the binaries and declare the GTK/libadwaita minimums in the
+[README](../README.md#before-you-install). Python is a build/test dependency.
+Native version ordering, filenames and official packaging revisions are
+described in [release assets](release-process.md#native-release-assets).
+
+Package scripts install payload noninteractively and may reload the machine
+unit database. They never activate services, scan homes, pair a TV, convert
+settings, restart the TV lifecycle oneshot or launch UI. The installed
+application's [onboarding flow](onboarding.md#package-owned-service-assets) owns
+activation and dynamic bindings. Packages must not claim profiles, credentials
+or dynamic drop-ins, even through DEB conffiles or RPM ghost entries.
+Upgrades preserve activation policy; removal retains configuration and user
+data. See the [user guide](user-guide.md#uninstall) for removal/reset procedures
+and [architecture](architecture-overview.md#native-package-updates) for ownership
+and privileged update boundaries.
+
+### Package tests
+
+Run the payload and native version-ordering tests without root:
+
+```bash
+python3 scripts/test_build_debian_package.py
+python3 scripts/test_build_rpm_package.py
+```
+
+Native ordering checks additionally need `dpkg` or Fedora's `python3-rpm`.
+CI builds each package twice and runs its lifecycle with real package tools.
+For local lifecycle checks, build revisions 1 and 2 (`--revision 2`) and run
+these commands **only inside a disposable Ubuntu/Fedora container** with root,
+Docker and the explicit test flag:
+
+```bash
+LG_BUDDY_DISPOSABLE_PACKAGE_TEST=1 bash scripts/test-debian-package.sh \
+  /packages/lg-buddy_2.0.0-beta.4-1_amd64.deb \
+  /packages/lg-buddy_2.0.0-beta.4-2_amd64.deb
+
+LG_BUDDY_DISPOSABLE_PACKAGE_TEST=1 bash scripts/test-rpm-package.sh \
+  /packages/lg-buddy-2.0.0-beta.4-1.x86_64.rpm \
+  /packages/lg-buddy-2.0.0-beta.4-2.x86_64.rpm
+```
+
+The suites check conflicts, install, upgrade/reinstall, ownership and payload
+verification, GTK launch, owner-only startup conversion, and retained data
+through removal. Package operations must leave current/stale profiles and
+credentials unchanged; conversion belongs to the installed GUI/user daemon.
+
+`scripts/test-debian-update.py` also exercises installed APT and DNF updates,
+including root digest refusal, declined confirmation, retained data and
+normal-user GUI handoff. CI supplies the debug transport fixtures and candidate
+package. Fedora 44 uses `--expect-new-rpm-dependency libglvnd-gles` to cover new
+dependencies and checks signed, unsigned, tampered and symlink dependency RPMs.
+Fedora 43 uses `--expect-unsupported-rpm-platform` to require refusal before HTTP
+or mutation. See the native jobs in [CI](../.github/workflows/ci.yml) for setup.
+
+These fixtures substitute HTTP transport and authorization. Public release
+updates and real desktop authorization/service/reboot checks belong to the
+[release process](release-process.md#public-package-and-legacy-canaries).
+Record test-run results in CI artifacts or the PR.
+
 ## Validation
-
-The updater uses the same fallible package database as installer preflight.
-Recognized bundles use the bundle installer. A healthy `lg-buddy` Debian package
-uses verified local-package acquisition and APT; the RPM package uses DNF5.
-Pacman installations receive package-source guidance, and unverifiable ownership refuses automatic installation.
-Ownership is checked before release discovery and again after acquisition,
-before candidate checks or installer execution. GUI update checks remain
-available; supported delivery owners share the install action.
-
-Native adapter details and qualification limits are in the Debian and RPM
-guides; [release publication](release-process.md#native-release-assets) integrates
-both packages under #136. Downloadable release
-packages do not configure a repository or promise that `apt upgrade` or
-`dnf upgrade` discovers LG Buddy releases.
 
 Useful checks during development:
 
@@ -220,7 +286,8 @@ installed GUI, historical upgrade and v1.8 startup-migration suites in separate
 matrix jobs, each with a
 20-minute limit. Those jobs and Fedora/Arch checks consume the same artifacts
 in parallel. The required `bundle-smoke-test` check passes only when artifact
-production, every Ubuntu smoke suite, both native package jobs and complete
+production, every Ubuntu smoke suite, native package jobs, DNF dependency and
+Fedora 43 refusal checks, and complete
 release-asset assembly succeed;
 failures, timeouts, and skipped
 jobs fail the check.

@@ -57,14 +57,25 @@ the [screen behavior and troubleshooting guide](docs/user-guide.md#automatic-scr
 
 ## Distribution Support
 
-The current x86_64 baselines are **Ubuntu 24.04 LTS**, **Fedora 44+** and
-**current Arch Linux**. Ubuntu uses `.deb`/APT, Fedora uses `.rpm`/DNF5, and
-Arch uses the release bundle. Other distributions and package-owned installs
-have different compatibility and update limits.
+Official downloads target **x86_64 Linux** with a writable systemd installation.
+In-app updates are available through LG Buddy's update screen or CLI.
 
-See the [distribution support matrix](docs/distribution-support.md) for tested
-coverage, desktop requirements, derivatives, immutable hosts and
-[Fedora 43 manual-update instructions](docs/distribution-support.md#fedora-43-update-an-existing-rpm-installation).
+| Distribution | Official downloads | Updates |
+| --- | --- | --- |
+| Ubuntu 24.04 LTS | `.deb` or release bundle | In-app updates. |
+| Fedora, standard writable installation | `.rpm` or release bundle | In-app updates; RPM updates require **44+**. Fedora **43** RPMs: [update manually](docs/user-guide.md#manual-rpm-updates). |
+| Arch Linux, fully updated | Official release bundle | In-app updates. |
+
+- **Other Debian/Ubuntu releases and derivatives such as Pop!_OS** may work
+  when they meet the requirements below, but are not separately supported baselines.
+- **Other RPM distributions, including RHEL-family and openSUSE:** no in-app
+  RPM updates. Release bundles require a compatible system.
+- **NixOS and immutable systems, including Fedora Atomic:** the installer and
+  in-app updates are unsupported. Distribution-specific integration is planned
+  under [#24](https://github.com/Staphylococcus/LG_Buddy/issues/24).
+
+Use a distribution release still maintained by its vendor. See
+[Before You Install](#before-you-install) for library and desktop requirements.
 
 ## Before You Install
 
@@ -115,6 +126,9 @@ system locations. Official NixOS support is planned for 3.0.0; see
 [issue #24](https://github.com/Staphylococcus/LG_Buddy/issues/24).
 
 ## Install
+
+For `.deb` or `.rpm` downloads, follow the [package installation steps](docs/user-guide.md#install-a-native-package).
+For the release bundle:
 
 1. Download and extract the [release archive](https://github.com/Staphylococcus/LG_Buddy/releases)
    for your platform.
