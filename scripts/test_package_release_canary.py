@@ -2,6 +2,7 @@
 """Eligibility and public-input refusal contracts for native release canaries."""
 
 import importlib
+import json
 import os
 import shutil
 import tempfile
@@ -25,6 +26,16 @@ def release(version, *, native=True, draft=False):
 
 
 class CanaryTests(unittest.TestCase):
+    def test_history_supports_old_gh_and_preserves_multiline_release_records(self):
+        releases = [release('2.0.0-beta.2'), release('2.0.0-beta.1', draft=True)]
+        releases[0]['body'] = 'First line\nQuoted "release" notes'
+        def old_gh(*arguments):
+            if '--slurp' in arguments:
+                raise RuntimeError('unknown flag: --slurp')
+            return '\n'.join(json.dumps(item) for item in releases)
+        with patch.object(canary, 'checked', side_effect=old_gh):
+            self.assertEqual(canary.release_history(), releases)
+
     def test_installed_verification_refuses_successful_commands_with_discrepancies(self):
         for family in ('debian', 'rpm'):
             for report in ('missing /usr/share/doc/lg-buddy/release-manifest.json',
