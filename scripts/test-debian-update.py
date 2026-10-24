@@ -33,7 +33,7 @@ def checked(*command: str, **kwargs: object) -> str:
     return result.stdout
 
 
-def drive(answer: str, version: str) -> None:
+def drive(answer: str, version: str) -> str:
     assert os.geteuid() != 0, "GUI handoff must stay in the invoking user's session"
     master, slave = pty.openpty()
     process = subprocess.Popen(["/usr/bin/lg-buddy", "updates", "install"],
@@ -68,7 +68,7 @@ def drive(answer: str, version: str) -> None:
     text = output.decode(errors="replace")
     if answer != "yes":
         assert "Upgrade cancelled." in text, text
-        return
+        return text
     assert f"Installed: {version} " in text, text
     for _ in range(200):
         window = subprocess.run(["xdotool", "search", "--onlyvisible", "--name", "^LG Buddy$"],
@@ -82,6 +82,7 @@ def drive(answer: str, version: str) -> None:
     assert len(pids) == 1, pids
     assert os.readlink(f"/proc/{pids[0]}/exe") == "/usr/bin/lg-buddy-gui"
     checked("gapplication", "action", "io.github.staphylococcus.LGBuddy", "quit")
+    return text
 
 
 def snapshot(paths: list[Path]) -> list[tuple[bytes, int, int, int]]:
@@ -98,9 +99,12 @@ def main() -> None:
     parser.add_argument("--gui-fixture", type=Path)
     parser.add_argument("--drive", choices=("yes", "no"))
     parser.add_argument("--version", default="")
+    parser.add_argument("--drive-output", type=Path)
     args = parser.parse_args()
     if args.drive:
-        drive(args.drive, args.version)
+        text = drive(args.drive, args.version)
+        if args.drive_output:
+            args.drive_output.write_text(text)
         return
     assert os.geteuid() == 0 and Path("/.dockerenv").exists() and os.environ.get("LG_BUDDY_DISPOSABLE_PACKAGE_TEST") == "1", "requires an explicitly disposable root Docker environment"
     os.umask(0o022)
@@ -207,8 +211,12 @@ cp {root}/usr/bin/* %{{buildroot}}/usr/bin/
                     checked("dnf5", "versionlock", "delete", "lg-buddy")
                 prior_requests = len(requests.read_text().splitlines())
                 for answer in ("no", "yes"):
+                    driver_log = Path(user.pw_dir) / f"update-{answer}.output"
                     checked("runuser", "-u", username, "--", "dbus-run-session", "--", "xvfb-run", "-a",
-                            "python3", str(Path(__file__).resolve()), "--drive", answer, "--version", str(facts["version"]), env=environment)
+                            "python3", str(Path(__file__).resolve()), "--drive", answer, "--version", str(facts["version"]),
+                            "--drive-output", str(driver_log), env=environment)
+                    expected_output = "Upgrade cancelled." if answer == "no" else f'Installed: {facts["version"]} '
+                    assert expected_output in driver_log.read_text()
                     assert snapshot(retained) == before
                     if answer == "no":
                         recent = requests.read_text().splitlines()[prior_requests:]

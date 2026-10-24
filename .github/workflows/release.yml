@@ -183,23 +183,112 @@ jobs:
               --candidate-target x86_64-unknown-linux-musl \
               --candidate-commit "${{ needs.validate.outputs.head_sha }}"
 
-      - name: Generate checksums
-        run: |
-          cd dist
-          sha256sum ./*.tar.gz > sha256sums.txt
-
-      - name: Verify checksums
-        run: |
-          cd dist
-          sha256sum -c sha256sums.txt
-
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v6
         with:
+          name: lg-buddy-bundle-${{ needs.validate.outputs.tag }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 35
+
+  build-native-packages:
+    if: needs.validate.outputs.prepare == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    needs: [validate, build-release-bundle]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - format: debian
+            image: ubuntu:24.04
+          - format: rpm
+            image: fedora:43
+    container: ${{ matrix.image }}
+    steps:
+      - name: Install native build tools
+        shell: bash
+        run: |
+          if [ '${{ matrix.format }}' = debian ]; then
+            apt-get update
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends binutils ca-certificates dbus-x11 dpkg-dev fonts-dejavu-core git libadwaita-1-0 libglib2.0-bin libgtk-4-1 passwd pkexec polkitd procps python3 sudo systemd xauth xdotool xvfb
+          else
+            dnf5 install -y --setopt=install_weak_deps=False binutils dbus-daemon dbus-tools dejavu-sans-fonts diffutils findutils git gtk4 libadwaita polkit procps-ng python3 python3-rpm rpm-build shadow-utils sudo systemd tar util-linux xdotool xorg-x11-server-Xvfb xorg-x11-xauth
+          fi
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.validate.outputs.head_sha }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: lg-buddy-bundle-${{ needs.validate.outputs.tag }}
+          path: dist
+
+      - name: Build and verify the exact release package
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.head_sha }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          archive="dist/lg-buddy-$RELEASE_VERSION-x86_64-unknown-linux-musl.tar.gz"
+          epoch="$(git -c safe.directory="$GITHUB_WORKSPACE" show -s --format=%ct HEAD)"
+          python3 scripts/build_${{ matrix.format }}_package.py --archive "$archive" --source-date-epoch "$epoch" --output-dir packages
+          package=(packages/*)
+          test "${#package[@]}" = 1
+          python3 scripts/release_assets.py --archive "$archive" --package "${package[0]}" --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"
+          python3 scripts/build_${{ matrix.format }}_package.py --archive "$archive" --source-date-epoch "$epoch" --output-dir lifecycle --revision 2
+
+      - name: Smoke-test the exact release package before publication
+        shell: bash
+        env:
+          LG_BUDDY_DISPOSABLE_PACKAGE_TEST: "1"
+        run: bash scripts/test-${{ matrix.format }}-package.sh packages/* lifecycle/*
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: lg-buddy-package-${{ matrix.format }}-${{ needs.validate.outputs.tag }}
+          path: packages/*
+          if-no-files-found: error
+          retention-days: 35
+
+  assemble-release-assets:
+    if: needs.validate.outputs.prepare == 'true'
+    runs-on: ubuntu-24.04
+    container: fedora:43
+    needs: [validate, build-release-bundle, build-native-packages]
+    steps:
+      - name: Install non-installing package decoders
+        run: dnf5 install -y --setopt=install_weak_deps=False dpkg git python3 rpm
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.validate.outputs.head_sha }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: lg-buddy-bundle-${{ needs.validate.outputs.tag }}
+          path: dist
+
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: lg-buddy-package-*-${{ needs.validate.outputs.tag }}
+          merge-multiple: true
+          path: dist
+
+      - name: Verify all release identities and generate complete checksums
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.head_sha }}
+        run: python3 scripts/release_assets.py --dist-dir dist --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT" --write-checksums
+
+      - uses: actions/upload-artifact@v6
+        with:
           name: lg-buddy-release-${{ needs.validate.outputs.tag }}
-          path: |
-            dist/*.tar.gz
-            dist/sha256sums.txt
+          path: dist/*
           if-no-files-found: error
           retention-days: 35
 
@@ -207,23 +296,22 @@ jobs:
     name: stage-release-draft
     if: needs.validate.outputs.prepare == 'true'
     runs-on: ubuntu-latest
+    container: fedora:43
     environment: release-promotion
     needs:
       - validate
-      - build-release-bundle
+      - assemble-release-assets
 
     steps:
+      - name: Install release verification and publication tools
+        run: dnf5 install -y --setopt=install_weak_deps=False diffutils dpkg gh git jq python3 rpm
+
       - name: Check out merged release commit
         uses: actions/checkout@v5
         with:
           ref: ${{ needs.validate.outputs.head_sha }}
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.x"
 
       - name: Fetch and revalidate release refs
         run: |
@@ -238,7 +326,7 @@ jobs:
               --head-ref "${{ needs.validate.outputs.head_sha }}" \
               --base-sha "${{ needs.validate.outputs.base_sha }}"
 
-      - name: Download verified release bundle
+      - name: Download verified release assets
         uses: actions/download-artifact@v7
         with:
           name: lg-buddy-release-${{ needs.validate.outputs.tag }}
@@ -247,16 +335,10 @@ jobs:
       - name: Verify downloaded checksums
         run: cd dist && sha256sum -c sha256sums.txt
 
-      - name: Revalidate downloaded bundle identities
+      - name: Revalidate downloaded bundle and native package identities
         run: |
-          python3 scripts/release_bundle_manifest.py validate \
-              --archive "dist/lg-buddy-${{ needs.validate.outputs.version }}-x86_64-unknown-linux-musl.tar.gz" \
-              --expected-release-tag "${{ needs.validate.outputs.tag }}" \
-              --expected-version "${{ needs.validate.outputs.version }}" \
-              --expected-channel "${{ needs.validate.outputs.channel }}" \
-              --expected-target x86_64-unknown-linux-musl \
-              --expected-gui-target x86_64-unknown-linux-gnu \
-              --expected-commit "${{ needs.validate.outputs.head_sha }}"
+          python3 scripts/release_assets.py --dist-dir dist \
+              --tag "${{ needs.validate.outputs.tag }}" --commit "${{ needs.validate.outputs.head_sha }}"
 
       - name: Create repository-scoped release token
         id: release-token
@@ -336,27 +418,26 @@ jobs:
     name: publish-reviewed-release
     if: needs.validate.outputs.prepare == 'true'
     runs-on: ubuntu-latest
+    container: fedora:43
     environment: release-publication
     permissions:
       actions: read
       contents: write
     needs:
       - validate
-      - build-release-bundle
+      - assemble-release-assets
       - stage-release-draft
 
     steps:
+      - name: Install release verification and publication tools
+        run: dnf5 install -y --setopt=install_weak_deps=False diffutils dpkg gh git jq python3 rpm
+
       - name: Check out staged release commit
         uses: actions/checkout@v5
         with:
           ref: ${{ needs.validate.outputs.head_sha }}
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.x"
 
       - name: Fetch and revalidate release refs
         run: |
@@ -371,7 +452,7 @@ jobs:
               --head-ref "${{ needs.validate.outputs.head_sha }}" \
               --base-sha "${{ needs.validate.outputs.base_sha }}"
 
-      - name: Download staged release bundle
+      - name: Download staged release assets
         uses: actions/download-artifact@v7
         with:
           name: lg-buddy-release-${{ needs.validate.outputs.tag }}
@@ -380,16 +461,10 @@ jobs:
       - name: Verify staged checksums
         run: cd dist && sha256sum -c sha256sums.txt
 
-      - name: Revalidate staged bundle identity
+      - name: Revalidate staged bundle and native package identities
         run: |
-          python3 scripts/release_bundle_manifest.py validate \
-              --archive "dist/lg-buddy-${{ needs.validate.outputs.version }}-x86_64-unknown-linux-musl.tar.gz" \
-              --expected-release-tag "${{ needs.validate.outputs.tag }}" \
-              --expected-version "${{ needs.validate.outputs.version }}" \
-              --expected-channel "${{ needs.validate.outputs.channel }}" \
-              --expected-target x86_64-unknown-linux-musl \
-              --expected-gui-target x86_64-unknown-linux-gnu \
-              --expected-commit "${{ needs.validate.outputs.head_sha }}"
+          python3 scripts/release_assets.py --dist-dir dist \
+              --tag "${{ needs.validate.outputs.tag }}" --commit "${{ needs.validate.outputs.head_sha }}"
 
       - name: Publish reviewed release draft
         env:
@@ -404,15 +479,109 @@ jobs:
 
           verify_dir="$(mktemp -d)"
           gh release download "$RELEASE_TAG" --dir "$verify_dir"
+          cmp dist/sha256sums.txt "$verify_dir/sha256sums.txt"
           (cd "$verify_dir" && sha256sum -c sha256sums.txt)
-          python3 scripts/release_bundle_manifest.py validate \
-              --archive "$verify_dir/lg-buddy-${{ needs.validate.outputs.version }}-x86_64-unknown-linux-musl.tar.gz" \
-              --expected-release-tag "$RELEASE_TAG" \
-              --expected-version "${{ needs.validate.outputs.version }}" \
-              --expected-channel "${{ needs.validate.outputs.channel }}" \
-              --expected-target x86_64-unknown-linux-musl \
-              --expected-gui-target x86_64-unknown-linux-gnu \
-              --expected-commit "$HEAD_SHA"
+          python3 scripts/release_assets.py --dist-dir "$verify_dir" \
+              --tag "$RELEASE_TAG" --commit "$HEAD_SHA"
+
+  production-v1-bundle-canary:
+    name: production-v1-bundle-canary
+    if: needs.validate.outputs.prepare == 'true'
+    runs-on: ubuntu-24.04
+    needs: [validate, publish]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.validate.outputs.head_sha }}
+          persist-credentials: false
+
+      - name: Install legacy bundle and GTK observation prerequisites
+        run: |
+          sudo rm -fv /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
+          sudo apt-get update
+          sudo apt-get install -y at-spi2-core dbus-x11 libadwaita-1-0 libgtk-4-1 python3-pyatspi python3-venv xdotool xvfb
+
+      - name: Download pinned public v1.8 bundle
+        run: |
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+              --output "$RUNNER_TEMP/lg-buddy-1.8.0-x86_64-unknown-linux-musl.tar.gz" \
+              https://github.com/Staphylococcus/LG_Buddy/releases/download/v1.8.0/lg-buddy-1.8.0-x86_64-unknown-linux-musl.tar.gz
+
+      - name: Upgrade published v1.8 to the published candidate before owner startup migration
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.head_sha }}
+        run: |
+          dbus-run-session -- xvfb-run -a env ADW_DISABLE_PORTAL=1 GDK_BACKEND=x11 \
+              /usr/bin/python3 scripts/test-v1-bundle-migration.py --published \
+              --previous-archive "$RUNNER_TEMP/lg-buddy-1.8.0-x86_64-unknown-linux-musl.tar.gz" \
+              --expected-tag "$RELEASE_TAG" --expected-commit "$RELEASE_COMMIT" \
+              --work-dir "$RUNNER_TEMP/production-v1-canary"
+
+      - name: Upload public legacy upgrade evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: production-v1-bundle-canary-${{ needs.validate.outputs.tag }}
+          path: |
+            ${{ runner.temp }}/production-v1-canary/**/*.output
+            ${{ runner.temp }}/production-v1-canary/**/result.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  production-native-canary:
+    name: production-native-canary (${{ matrix.format }})
+    if: needs.validate.outputs.prepare == 'true'
+    runs-on: ubuntu-24.04
+    needs: [validate, publish]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - format: debian
+            image: ubuntu:24.04
+          - format: rpm
+            image: fedora:43
+    container: ${{ matrix.image }}
+    steps:
+      - name: Install public canary prerequisites
+        shell: bash
+        run: |
+          if [ '${{ matrix.format }}' = debian ]; then
+            apt-get update
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates dbus-x11 gh git libadwaita-1-0 libglib2.0-bin libgtk-4-1 passwd procps python3 sudo util-linux xauth xdotool xvfb
+          else
+            dnf5 install -y --setopt=install_weak_deps=False dbus-daemon dbus-tools dejavu-sans-fonts gh git gtk4 libadwaita polkit procps-ng python3 rpm shadow-utils sudo systemd util-linux xdotool xorg-x11-server-Xvfb xorg-x11-xauth
+          fi
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.validate.outputs.head_sha }}
+          persist-credentials: false
+
+      - name: Exercise a public native package update or record first-release bootstrap
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LG_BUDDY_DISPOSABLE_PACKAGE_TEST: "1"
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.head_sha }}
+        run: |
+          python3 scripts/test-production-package-canary.py --format '${{ matrix.format }}' \
+              --expected-tag "$RELEASE_TAG" --expected-commit "$RELEASE_COMMIT" \
+              --work-dir "$RUNNER_TEMP/native-canary"
+          cat "$RUNNER_TEMP/native-canary/result.json" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload public native update evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: production-native-canary-${{ matrix.format }}-${{ needs.validate.outputs.tag }}
+          path: |
+            ${{ runner.temp }}/native-canary/*.output
+            ${{ runner.temp }}/native-canary/*.json
+          if-no-files-found: warn
+          retention-days: 30
 
   production-prerelease-canary:
     name: production-prerelease-canary
@@ -474,6 +643,7 @@ jobs:
           python3 scripts/record_github_release_responses.py \
               --repository "$GITHUB_REPOSITORY" \
               --tag "${{ needs.validate.outputs.tag }}" \
+              --packages \
               --output "$RUNNER_TEMP/production-canary/github-responses.json"
 
       - name: Upload canary evidence for the offline mock

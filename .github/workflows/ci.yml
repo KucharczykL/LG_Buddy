@@ -12,6 +12,9 @@ permissions:
   checks: read
   contents: read
 
+env:
+  SMOKE_VERSION: 2.0.0-beta.1.ci
+
 jobs:
   kwin-bridges:
     uses: ./.github/workflows/kwin-bridge.yml
@@ -148,6 +151,11 @@ jobs:
       - name: Validate release publication contract
         run: python3 scripts/test_publish_release_assets.py
 
+      - name: Validate complete release asset identities
+        run: |
+          python3 scripts/test_release_assets.py
+          python3 scripts/test_package_release_canary.py
+
       - name: Validate release bundle manifest contract
         run: python3 scripts/test_release_bundle_manifest.py
 
@@ -235,6 +243,12 @@ jobs:
             --runtime-fixture updater-fixtures/lg-buddy \
             --gui-fixture updater-fixtures/lg-buddy-gui
 
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ci-debian-package
+          path: dist/*-1_amd64.deb
+          if-no-files-found: error
+
   rpm-package:
     runs-on: ubuntu-24.04
     container: fedora:43
@@ -303,12 +317,48 @@ jobs:
             --runtime-fixture updater-fixtures/lg-buddy \
             --gui-fixture updater-fixtures/lg-buddy-gui
 
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ci-rpm-package
+          path: dist/*-1.x86_64.rpm
+          if-no-files-found: error
+
+  release-assets:
+    runs-on: ubuntu-24.04
+    container: fedora:43
+    timeout-minutes: 10
+    needs: [bundle-build, debian-package, rpm-package]
+    steps:
+      - name: Install non-installing package decoders
+        run: dnf5 install -y --setopt=install_weak_deps=False dpkg git python3 rpm
+
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: ci-release-bundle
+          path: dist
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: ci-debian-package
+          path: dist
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: ci-rpm-package
+          path: dist
+
+      - name: Verify and assemble all real release formats together
+        run: |
+          python3 scripts/release_assets.py --dist-dir dist --tag "v$SMOKE_VERSION" --commit "$GITHUB_SHA" --write-checksums
+          python3 scripts/release_assets.py --dist-dir dist --tag "v$SMOKE_VERSION" --commit "$GITHUB_SHA"
+          GH_RELEASE_DRY_RUN=1 bash scripts/publish-release-assets.sh stage-draft --dist-dir dist --tag "v$SMOKE_VERSION" --commit "$GITHUB_SHA"
+
   bundle-build:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     needs: [verify, kwin-bridges]
-    env:
-      SMOKE_VERSION: 1.4.0-beta.2.ci
 
     steps:
       - name: Check out repository
@@ -375,9 +425,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [release-bundle, installed-gui, cross-version-upgrade]
-    env:
-      SMOKE_VERSION: 1.4.0-beta.2.ci
+        suite: [release-bundle, installed-gui, cross-version-upgrade, v1-migration]
 
     steps:
       - name: Check out repository
@@ -397,7 +445,7 @@ jobs:
             sudo sed -i 's|http://azure[.]archive[.]ubuntu[.]com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/apt-mirrors.txt
           fi
           sudo apt-get update
-          sudo apt-get install -y at-spi2-core binutils dbus-x11 libadwaita-1-dev libgtk-4-dev pkexec python3-dbus python3-pyatspi strace xdotool xvfb
+          sudo apt-get install -y at-spi2-core binutils dbus-x11 libadwaita-1-dev libgtk-4-dev pkexec python3-dbus python3-pyatspi python3-venv strace xdotool xvfb
           # Prove current installation and GUI behavior without the retired dialog tool or external idle command.
           sudo apt-get purge -y zenity swayidle
 
@@ -481,28 +529,37 @@ jobs:
               --candidate-target x86_64-unknown-linux-musl \
               --candidate-commit "${{ github.sha }}"
 
-      - name: Generate checksums
-        if: matrix.suite == 'release-bundle'
+      - name: Download pinned published v1.8 baseline
+        if: matrix.suite == 'v1-migration'
         run: |
-          cd dist
-          sha256sum ./*.tar.gz > sha256sums.txt
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+              --output "$RUNNER_TEMP/lg-buddy-1.8.0-x86_64-unknown-linux-musl.tar.gz" \
+              https://github.com/Staphylococcus/LG_Buddy/releases/download/v1.8.0/lg-buddy-1.8.0-x86_64-unknown-linux-musl.tar.gz
 
-      - name: Verify checksums
-        if: matrix.suite == 'release-bundle'
+      - name: Verify v1.8 payload upgrade before installed GUI and owner startup migration
+        if: matrix.suite == 'v1-migration'
         run: |
-          cd dist
-          sha256sum -c sha256sums.txt
+          dbus-run-session -- xvfb-run -a env ADW_DISABLE_PORTAL=1 GDK_BACKEND=x11 \
+              /usr/bin/python3 scripts/test-v1-bundle-migration.py \
+              --previous-archive "$RUNNER_TEMP/lg-buddy-1.8.0-x86_64-unknown-linux-musl.tar.gz" \
+              --candidate-archive "dist/lg-buddy-$SMOKE_VERSION-x86_64-unknown-linux-musl.tar.gz" \
+              --expected-tag "v$SMOKE_VERSION" --expected-commit "$GITHUB_SHA" \
+              --work-dir "$RUNNER_TEMP/v1-migration"
 
-      - name: Dry-run publish release assets
-        if: matrix.suite == 'release-bundle'
-        env:
-          GH_RELEASE_DRY_RUN: "1"
-        run: ./scripts/publish-release-assets.sh stage-draft --dist-dir dist --tag "v${SMOKE_VERSION}" --commit "${{ github.sha }}"
+      - name: Upload v1.8 migration evidence
+        if: always() && matrix.suite == 'v1-migration'
+        uses: actions/upload-artifact@v6
+        with:
+          name: v1-bundle-migration
+          path: |
+            ${{ runner.temp }}/v1-migration/**/*.output
+            ${{ runner.temp }}/v1-migration/**/result.json
+          if-no-files-found: warn
 
   bundle-smoke-test:
     runs-on: ubuntu-24.04
     timeout-minutes: 2
-    needs: [bundle-build, bundle-smoke-suites, debian-package, rpm-package]
+    needs: [bundle-build, bundle-smoke-suites, debian-package, rpm-package, release-assets]
     # Keep the required check failing when production or any suite fails,
     # times out, or is skipped, even after an upstream failure.
     if: ${{ always() }}
@@ -513,9 +570,10 @@ jobs:
           SMOKE_RESULT: ${{ needs.bundle-smoke-suites.result }}
           DEBIAN_RESULT: ${{ needs.debian-package.result }}
           RPM_RESULT: ${{ needs.rpm-package.result }}
+          ASSETS_RESULT: ${{ needs.release-assets.result }}
         run: |
-          if [ "$BUILD_RESULT" != success ] || [ "$SMOKE_RESULT" != success ] || [ "$DEBIAN_RESULT" != success ] || [ "$RPM_RESULT" != success ]; then
-            echo "Bundle build: $BUILD_RESULT; smoke suites: $SMOKE_RESULT; Debian package: $DEBIAN_RESULT; RPM package: $RPM_RESULT" >&2
+          if [ "$BUILD_RESULT" != success ] || [ "$SMOKE_RESULT" != success ] || [ "$DEBIAN_RESULT" != success ] || [ "$RPM_RESULT" != success ] || [ "$ASSETS_RESULT" != success ]; then
+            echo "Bundle build: $BUILD_RESULT; smoke suites: $SMOKE_RESULT; Debian package: $DEBIAN_RESULT; RPM package: $RPM_RESULT; release assets: $ASSETS_RESULT" >&2
             exit 1
           fi
 
@@ -523,8 +581,6 @@ jobs:
     needs: bundle-build
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    env:
-      SMOKE_VERSION: 1.4.0-beta.2.ci
     strategy:
       fail-fast: false
       matrix:

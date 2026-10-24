@@ -13,6 +13,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from release_assets import asset_names
+
 
 API_VERSION = "2026-03-10"
 
@@ -146,7 +148,8 @@ class GitHubRecorder:
 
 
 def record_responses(
-    *, recorder: GitHubRecorder, repository: str, tag: str, target: str
+    *, recorder: GitHubRecorder, repository: str, tag: str, target: str,
+    packages: bool = False,
 ) -> dict[str, Any]:
     encoded_repository = "/".join(
         urllib.parse.quote(part, safe="") for part in repository.split("/")
@@ -174,12 +177,15 @@ def record_responses(
         f"lg-buddy-{version}-{target}.tar.gz",
         "sha256sums.txt",
     }
+    if packages:
+        expected_assets = set(asset_names(version, target))
     selected_assets = [
         asset
         for asset in release.get("assets", [])
         if asset.get("name") in expected_assets
     ]
-    if {asset.get("name") for asset in selected_assets} != expected_assets:
+    if ({asset.get("name") for asset in selected_assets} != expected_assets
+        or len(selected_assets) != len(expected_assets)):
         raise RuntimeError(f"release {tag} does not expose the expected upgrade assets")
 
     annotated_tag = None
@@ -221,6 +227,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repository", required=True)
     parser.add_argument("--tag", required=True)
     parser.add_argument("--target", default="x86_64-unknown-linux-musl")
+    parser.add_argument("--packages", action="store_true",
+                        help="Require and record both native package assets alongside the bundle")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--api-root", default="https://api.github.com")
     return parser.parse_args()
@@ -234,6 +242,7 @@ def main() -> int:
         repository=args.repository,
         tag=args.tag,
         target=args.target,
+        packages=args.packages,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(

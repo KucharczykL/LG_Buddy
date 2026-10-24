@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -183,6 +184,23 @@ class PromotionTests(unittest.TestCase):
         head = self.repository.candidate("1.4.0-beta.1", "1.3.0")
         with self.assertRaisesRegex(PromotionError, "does not match Cargo.lock"):
             self.repository.validate("prerelease", head)
+
+    def test_unrepresentable_native_prerelease_is_rejected_before_merge(self) -> None:
+        for version in ('1.4.0-preview.1', '1.4.0-alpha.ci', '1.4.0-beta.1.2'):
+            head = self.repository.candidate(version)
+            with self.subTest(version=version), self.assertRaisesRegex(PromotionError, 'cannot be packaged'):
+                self.repository.validate('prerelease', head)
+
+    def test_cli_reports_native_version_refusal_without_a_traceback(self) -> None:
+        head = self.repository.candidate('1.4.0-preview.1')
+        result = subprocess.run([sys.executable, str(Path(__file__).with_name('release_promotion.py')),
+                                 '--repository', str(self.repository.path), '--target', 'prerelease',
+                                 '--head-ref', head, '--base-sha', self.repository.stable_sha,
+                                 '--main-ref', 'main', '--prerelease-ref', 'prerelease', '--dev-ref', 'dev'],
+                                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('cannot be packaged', result.stderr)
+        self.assertNotIn('Traceback', result.stderr)
 
     def test_gui_version_mismatch_is_rejected(self) -> None:
         self.repository.git("switch", "dev")

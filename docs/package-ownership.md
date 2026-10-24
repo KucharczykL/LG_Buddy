@@ -9,8 +9,10 @@ package creation and its APT adapter have isolated coverage and
 RPM package creation and its DNF5 adapter have isolated coverage and
 [Fedora VM qualification](rpm-vm-validation.md) under
 [#135](https://github.com/Staphylococcus/LG_Buddy/issues/135).
-Public package assets and update canaries remain
-[#136](https://github.com/Staphylococcus/LG_Buddy/issues/136).
+The [release train](release-process.md#native-release-assets) integrates public
+package assets and update canaries under
+[#136](https://github.com/Staphylococcus/LG_Buddy/issues/136); production
+qualification requires the recorded published update journeys.
 
 ## Ownership invariant
 
@@ -247,8 +249,8 @@ offer.
 | Ownership | Implemented behavior | Remaining delivery work |
 | --- | --- | --- |
 | `Bundle` | Verified release-bundle installation | Preserve this path for existing bundles and Arch |
-| `Package { Dpkg }` | Verified local `.deb` acquisition and APT for the healthy `lg-buddy` package | #136 publication and public update canaries |
-| `Package { Rpm }` | Verified local `.rpm` acquisition and DNF5 for the healthy `lg-buddy` package | #136 publication and public update canaries |
+| `Package { Dpkg }` | Verified local `.deb` acquisition and APT for the healthy `lg-buddy` package | #136 published update qualification |
+| `Package { Rpm }` | Verified local `.rpm` acquisition and DNF5 for the healthy `lg-buddy` package | #136 published update qualification |
 | `Package { Pacman }` | Refuse self-install; show pacman guidance | Externally managed; no pacman delivery in v2 |
 | `Unknown` | Refuse automatic installation | Remains refused, including conflicting/error observations |
 
@@ -395,4 +397,4 @@ canaries, while retaining bundle/Arch and historical bundle-upgrade coverage.
 Those delivery/real-host results must be recorded separately from prework
 fixture success. The [Ubuntu VM record](debian-vm-validation.md) and
 [Fedora VM record](rpm-vm-validation.md) document the Debian and RPM results.
-Public package assets and update canaries remain #136.
+Public package update qualification is recorded separately under #136.
