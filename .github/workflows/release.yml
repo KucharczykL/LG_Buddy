@@ -571,8 +571,8 @@ jobs:
         run: |
           python3 scripts/test-production-package-canary.py --format '${{ matrix.format }}' \
               --expected-tag "$RELEASE_TAG" --expected-commit "$RELEASE_COMMIT" \
-              --work-dir "$RUNNER_TEMP/native-canary"
-          cat "$RUNNER_TEMP/native-canary/result.json" >> "$GITHUB_STEP_SUMMARY"
+              --work-dir target/production-native-canary
+          cat target/production-native-canary/result.json >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload public native update evidence
         if: always()
@@ -580,8 +580,8 @@ jobs:
         with:
           name: production-native-canary-${{ matrix.format }}-${{ needs.validate.outputs.tag }}
           path: |
-            ${{ runner.temp }}/native-canary/*.output
-            ${{ runner.temp }}/native-canary/*.json
+            target/production-native-canary/*.output
+            target/production-native-canary/*.json
           if-no-files-found: warn
           retention-days: 30
 

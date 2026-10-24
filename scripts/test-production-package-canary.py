@@ -35,6 +35,13 @@ def api(path: str):
     return json.loads(checked('gh', 'api', '--header', f'X-GitHub-Api-Version: {API_VERSION}', path))
 
 
+def release_history() -> list[dict]:
+    # Ubuntu 24.04's gh supports pagination/jq but predates --slurp.
+    records = checked('gh', 'api', '--paginate', '--jq', '.[] | @json',
+                      f'repos/{REPOSITORY}/releases?per_page=100')
+    return [json.loads(line) for line in records.splitlines()]
+
+
 def select_baseline(releases: list[dict], version: str) -> dict | None:
     """Choose test input only; the installed app still owns update discovery."""
     candidate = SemVer.parse(version)
@@ -149,9 +156,7 @@ def main():
               'substitutions': 'disposable container, passwordless sudo and Xvfb; real public GitHub and package managers'}
     sudoers = Path('/etc/sudoers.d/lg-buddy-production-canary')
     try:
-        pages = json.loads(checked('gh', 'api', '--paginate', '--slurp',
-                                   f'repos/{REPOSITORY}/releases?per_page=100'))
-        releases = [release for page in pages for release in page]
+        releases = release_history()
         candidate = api(f'repos/{REPOSITORY}/releases/tags/{args.expected_tag}')
         if api(f'repos/{REPOSITORY}/commits/{args.expected_tag}')['sha'] != args.expected_commit:
             raise AssetError('Published candidate tag differs from the reviewed release commit')
