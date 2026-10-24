@@ -102,11 +102,24 @@ Local package authenticity comes from the same independently verified GitHub
 release/digest boundary as APT; stricter administrator DNF policy can still
 refuse installation.
 
+The validator accepts both original repository IDs and DNF's
+`@stored_transaction(repo_id)` format, while keeping `@System` replacements
+and the exact local LG Buddy package separate. Because newer DNF treats
+stored repository RPMs as local packages, the helper independently requires
+valid signatures and digests on every dependency RPM with `rpmkeys`, against
+the system's trusted RPM keyring, before reporting mutation or replaying.
+Missing trusted keys refuse the update; administrators must establish that
+repository's trust through their normal DNF workflow before retrying.
+
 Known Fedora 43 limitation: DNF 5.2.18 can fail replay when an update adds a
 repository dependency, even with its RPM already stored. This also reproduces
-with plain DNF and is tracked as a stable-readiness blocker in [#136](https://github.com/Staphylococcus/LG_Buddy/issues/136).
+with plain DNF and is tracked in [#334](https://github.com/Staphylococcus/LG_Buddy/issues/334),
+a stable-readiness blocker under [#136](https://github.com/Staphylococcus/LG_Buddy/issues/136).
 The current version-only beta-to-beta qualification retains the baseline's
 runtime dependency set and is reported separately.
+The [upstream-fix validation record](dnf-replay-validation.md) covers newer
+DNF and the separate Fedora 43 compatibility assessment; this slice does not
+rewrite older DNF plans or change the supported Fedora baseline.
 
 Afterward the updater verifies the exact RPM database version, ownership and
 both installed binary identities before relaunching GTK as the invoking user.
@@ -145,3 +158,10 @@ loopback HTTP transport and sudo authorization are test substitutes; real
 desktop authentication and reboot are covered by the
 [VM qualification](rpm-vm-validation.md). The RPM job is part of the existing
 required `bundle-smoke-test` aggregate check.
+
+A separate Fedora 44 DNF job runs the updater with `libglvnd-gles` absent from
+the baseline and requires it to be installed by the update. It also exercises
+the helper's stored-RPM verification with a genuine signed dependency, an
+unsigned RPM, a tampered RPM and a symlink. The required smoke aggregate
+includes this job. Pass `--expect-new-rpm-dependency libglvnd-gles` to the
+native updater smoke to require the same dependency-changing journey locally.
