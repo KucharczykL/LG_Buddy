@@ -71,6 +71,15 @@ if grep -Eiq 'python|bscpylgtv|zenity|swayidle|kwin|plasma|cmake|g\+\+|libQt|lib
     fail "Package requires obsolete or optional integration/build dependencies"
 fi
 
+# First let DNF resolve every declared runtime dependency on the clean image.
+# The direct RPM conflict probes below must reach %pre, rather than fail on
+# missing dependencies before testing the package's ownership guard.
+install_package "$baseline"
+rpm --query --whatprovides 'libGLESv2.so.2()(64bit)'
+no_activation
+dnf5 remove -y --setopt=clean_requirements_on_remove=False lg-buddy >"$work/dependency-bootstrap-remove.log" 2>&1
+: >"$work/service-actions"
+
 # RPM normally adopts unowned files. The package must refuse before doing so.
 printf '%s\n' 'unowned bundle sentinel' >/usr/bin/lg-buddy
 refuses_unpack 'unowned or unverifiable payload /usr/bin/lg-buddy'
