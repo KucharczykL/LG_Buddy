@@ -212,8 +212,9 @@ The GUI launch checks cover both no-argument normal Overview launch and the
 brightness deep link, including focus handoff from another view. Installed
 smoke keeps the desktop entry, runtime, and GUI together.
 
-PR CI runs verification and the KWin checks first, then builds the candidate
-bundle and GUI journey fixtures once. Ubuntu runs the release-bundle, installed
+PR CI runs verification and the KWin checks first. Verification builds GUI
+journey fixtures using its existing GNU debug dependency graph; the bundle job
+builds only the optimized runtime and GUI. Ubuntu runs the release-bundle, installed
 GUI, and cross-version upgrade suites in separate matrix jobs, each with a
 20-minute limit. Those jobs and Fedora/Arch checks consume the same artifacts
 in parallel. The required `bundle-smoke-test` check passes only when artifact

@@ -160,6 +160,25 @@ jobs:
       - name: Validate GitHub response recorder
         run: python3 scripts/test_record_github_release_responses.py
 
+      - name: Build GUI journey fixtures
+        env:
+          LG_BUDDY_BUILD_COMMIT: ${{ github.sha }}
+          LG_BUDDY_RELEASE_VERSION: "0.0.0"
+        run: |
+          # Reuse the GNU debug graph already built by the Rust/GTK checks.
+          # The release bundle job only needs its optimized target graphs.
+          cargo build --locked -p lg-buddy -p lg-buddy-gui --features gui-test-fixtures --bins --example gui_journey_tv
+          mkdir -p target/gui-journey-fixtures
+          cp target/debug/lg-buddy target/debug/lg-buddy-gui target/debug/examples/gui_journey_tv target/gui-journey-fixtures/
+
+      - name: Upload GUI journey fixtures for supported-distro checks
+        uses: actions/upload-artifact@v6
+        with:
+          name: ci-gui-journey-fixtures
+          path: target/gui-journey-fixtures/*
+          if-no-files-found: error
+          retention-days: 7
+
   debian-package:
     runs-on: ubuntu-24.04
     container: ubuntu:24.04
@@ -341,30 +360,11 @@ jobs:
           umask 0002
           ./scripts/build-release-bundle.sh --target x86_64-unknown-linux-musl --gui-target x86_64-unknown-linux-gnu --version "$SMOKE_VERSION" --output-dir dist --require-kwin-matrix
 
-      - name: Build GUI journey fixtures
-        env:
-          LG_BUDDY_BUILD_COMMIT: ${{ github.sha }}
-          LG_BUDDY_RELEASE_VERSION: "0.0.0"
-        run: |
-          # The fixture shares the GNU debug dependency graph and glibc floor
-          # of the GUI pair tested on Ubuntu, Fedora and Arch.
-          cargo build --locked -p lg-buddy -p lg-buddy-gui --features gui-test-fixtures --bins --example gui_journey_tv
-          mkdir -p target/gui-journey-fixtures
-          cp target/debug/lg-buddy target/debug/lg-buddy-gui target/debug/examples/gui_journey_tv target/gui-journey-fixtures/
-
       - name: Upload bundle for supported-distro checks
         uses: actions/upload-artifact@v6
         with:
           name: ci-release-bundle
           path: dist/*.tar.gz
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Upload GUI journey fixtures for supported-distro checks
-        uses: actions/upload-artifact@v6
-        with:
-          name: ci-gui-journey-fixtures
-          path: target/gui-journey-fixtures/*
           if-no-files-found: error
           retention-days: 7
 
