@@ -102,6 +102,12 @@ Local package authenticity comes from the same independently verified GitHub
 release/digest boundary as APT; stricter administrator DNF policy can still
 refuse installation.
 
+Known Fedora 43 limitation: DNF 5.2.18 can fail replay when an update adds a
+repository dependency, even with its RPM already stored. This also reproduces
+with plain DNF and is tracked as a stable-readiness blocker in [#136](https://github.com/Staphylococcus/LG_Buddy/issues/136).
+The current version-only beta-to-beta qualification retains the baseline's
+runtime dependency set and is reported separately.
+
 Afterward the updater verifies the exact RPM database version, ownership and
 both installed binary identities before relaunching GTK as the invoking user.
 A newer release still needs publication as an RPM asset; no package repository
