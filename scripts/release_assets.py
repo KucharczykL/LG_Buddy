@@ -12,8 +12,8 @@ import subprocess
 import tarfile
 from pathlib import Path
 
-from build_debian_package import debian_version
-from build_rpm_package import rpm_version
+from build_debian_package import asset_name as debian_asset_name, debian_version
+from build_rpm_package import asset_name as rpm_asset_name, rpm_version
 from package_payload import GUI_TARGET, RUNTIME_TARGET, PackageError
 from release_bundle_manifest import (
     ManifestError, ReleaseIdentity, parse_manifest, validate_archive,
@@ -31,8 +31,8 @@ def asset_names(version: str, target: str = RUNTIME_TARGET) -> tuple[str, ...]:
         raise AssetError(f"Unsupported release target: {target}")
     return (
         f"lg-buddy-{version}-{target}.tar.gz",
-        f"lg-buddy_{debian_version(version)}_amd64.deb",
-        f"lg-buddy-{rpm_version(version)}.x86_64.rpm",
+        debian_asset_name(version),
+        rpm_asset_name(version),
         "sha256sums.txt",
     )
 

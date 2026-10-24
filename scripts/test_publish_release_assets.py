@@ -110,17 +110,19 @@ if not state["exists"]:
 
 if command == "upload":
     source = Path(rest[0])
+    # Match GitHub's observed upload normalization, including native '~'.
+    uploaded_name = source.name.replace("~", ".")
     if os.environ.get("FAKE_GH_FAIL_UPLOAD") == source.name:
         sys.exit("injected upload failure")
     asset_dir.mkdir(parents=True, exist_ok=True)
     if os.environ.get("FAKE_GH_CORRUPT_UPLOAD") == source.name:
         content = bytearray(source.read_bytes())
         content[0] ^= 1
-        (asset_dir / source.name).write_bytes(content)
+        (asset_dir / uploaded_name).write_bytes(content)
     else:
-        shutil.copyfile(source, asset_dir / source.name)
-    if source.name not in state["assets"]:
-        state["assets"].append(source.name)
+        shutil.copyfile(source, asset_dir / uploaded_name)
+    if uploaded_name not in state["assets"]:
+        state["assets"].append(uploaded_name)
     save()
     sys.exit(0)
 

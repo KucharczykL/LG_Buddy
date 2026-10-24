@@ -144,12 +144,17 @@ The workflow:
 
 ## Native release assets
 
-Every new release contains exactly four assets. For `2.0.0-beta.2` they are:
+Every new release contains exactly four assets. For `2.0.0-beta.3` they are:
 
-- `lg-buddy-2.0.0-beta.2-x86_64-unknown-linux-musl.tar.gz`
-- `lg-buddy_2.0.0~beta.2-1_amd64.deb`
-- `lg-buddy-2.0.0~beta.2-1.x86_64.rpm`
+- `lg-buddy-2.0.0-beta.3-x86_64-unknown-linux-musl.tar.gz`
+- `lg-buddy_2.0.0-beta.3-1_amd64.deb`
+- `lg-buddy-2.0.0-beta.3-1.x86_64.rpm`
 - `sha256sums.txt`
+
+Native download filenames use upstream SemVer. Their embedded DEB/RPM version
+remains `2.0.0~beta.3-1`, preserving native prerelease ordering. Separating these
+forms avoids GitHub's [asset filename normalization](https://docs.github.com/en/rest/releases/assets#upload-a-release-asset),
+which rewrites `~` during upload.
 
 `scripts/release_assets.py` derives this inventory from the reviewed version.
 It rejects missing/unexpected assets and incomplete, duplicate or mismatched

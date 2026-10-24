@@ -26,7 +26,11 @@ pub(crate) fn native_version(version: &Version) -> Result<String, BundleAcquisit
 }
 
 pub(super) fn asset_name(version: &Version) -> Result<String, BundleAcquisitionError> {
-    Ok(format!("lg-buddy_{}_amd64.deb", native_version(version)?))
+    // GitHub rewrites '~' in filenames; package metadata retains native ordering.
+    Ok(format!(
+        "lg-buddy_{}_amd64.deb",
+        native_version(version)?.replace('~', "-")
+    ))
 }
 
 pub(crate) use super::native_package::VerifiedNativePackage as VerifiedDebianPackage;
@@ -226,6 +230,18 @@ mod tests {
             .unwrap()
             .success());
         Some(fs::read(output).unwrap())
+    }
+
+    #[test]
+    fn package_download_names_do_not_contain_native_tildes() {
+        assert_eq!(
+            asset_name(&Version::parse("2.0.0-beta.2.ci").unwrap()).unwrap(),
+            "lg-buddy_2.0.0-beta.2.ci-1_amd64.deb"
+        );
+        assert_eq!(
+            asset_name(&Version::parse("2.0.0").unwrap()).unwrap(),
+            "lg-buddy_2.0.0-1_amd64.deb"
+        );
     }
 
     #[test]

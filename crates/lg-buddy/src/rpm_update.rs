@@ -147,7 +147,12 @@ fn name_arch(nevra: &str) -> Option<(&str, &str)> {
     }
     Some((name, arch))
 }
-fn verify_plan(bytes: &[u8], current: &str, target: &str) -> Result<String, String> {
+fn verify_plan(
+    bytes: &[u8],
+    current: &str,
+    target: &str,
+    asset_name: &str,
+) -> Result<String, String> {
     if bytes.len() > 2 * 1024 * 1024 {
         return Err("DNF plan is too large".into());
     }
@@ -158,7 +163,7 @@ fn verify_plan(bytes: &[u8], current: &str, target: &str) -> Result<String, Stri
     }
     let wanted = format!("lg-buddy-{target}.x86_64");
     let old = format!("lg-buddy-{current}.x86_64");
-    let local = format!("./packages/{wanted}.rpm");
+    let local = format!("./packages/{asset_name}");
     let mut upgraded = std::collections::HashSet::new();
     let mut replaced = std::collections::HashSet::new();
     let mut seen = std::collections::HashSet::new();
@@ -269,7 +274,12 @@ pub fn run(arguments: &[String]) -> Result<(), String> {
         .map_err(|e| format!("DNF did not produce a usable upgrade plan (check version locks and package state): {e}"))?;
     let current = installed_version()?;
     let target = rpm::native_version(expected.version()).map_err(|e| e.to_string())?;
-    let relative = verify_plan(&plan, &current, &target)?;
+    let asset_name = package
+        .path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("Invalid verified RPM filename")?;
+    let relative = verify_plan(&plan, &current, &target, asset_name)?;
     // DNF --store does not copy @commandline RPMs. Populate only the checked
     // name from the independently verified, root-private receipt.
     let destination = transaction.join(relative);
@@ -298,7 +308,38 @@ mod tests {
         ]})
     }
     fn verify(value: &serde_json::Value) -> Result<String, String> {
-        verify_plan(&serde_json::to_vec(value).unwrap(), "1.0.0-1", "2.0.0-1")
+        verify_plan(
+            &serde_json::to_vec(value).unwrap(),
+            "1.0.0-1",
+            "2.0.0-1",
+            "lg-buddy-2.0.0-1.x86_64.rpm",
+        )
+    }
+    #[test]
+    fn prerelease_plan_checks_native_identity_and_portable_filename_separately() {
+        let mut value = plan();
+        value["rpms"][0]["nevra"] = json!("lg-buddy-2.0.0~beta.3-1.x86_64");
+        value["rpms"][0]["package_path"] =
+            json!("./packages/lg-buddy-2.0.0-beta.3-1.x86_64.rpm");
+        let verify = |value: &serde_json::Value| {
+            verify_plan(
+                &serde_json::to_vec(value).unwrap(),
+                "1.0.0-1",
+                "2.0.0~beta.3-1",
+                "lg-buddy-2.0.0-beta.3-1.x86_64.rpm",
+            )
+        };
+        assert_eq!(
+            verify(&value).unwrap(),
+            "./packages/lg-buddy-2.0.0-beta.3-1.x86_64.rpm"
+        );
+        value["rpms"][0]["package_path"] =
+            json!("./packages/lg-buddy-2.0.0~beta.3-1.x86_64.rpm");
+        assert!(verify(&value).is_err());
+        value["rpms"][0]["package_path"] =
+            json!("./packages/lg-buddy-2.0.0-beta.3-1.x86_64.rpm");
+        value["rpms"][0]["nevra"] = json!("lg-buddy-2.0.0-1.x86_64");
+        assert!(verify(&value).is_err());
     }
     #[test]
     fn exact_upgrade_plan_allows_repository_dependencies() {

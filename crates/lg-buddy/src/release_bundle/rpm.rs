@@ -24,7 +24,10 @@ pub(crate) fn native_version(version: &Version) -> Result<String, BundleAcquisit
 }
 
 pub(super) fn asset_name(version: &Version) -> Result<String, BundleAcquisitionError> {
-    Ok(format!("lg-buddy-{}.x86_64.rpm", native_version(version)?))
+    Ok(format!(
+        "lg-buddy-{}.x86_64.rpm",
+        native_version(version)?.replace('~', "-")
+    ))
 }
 
 pub(crate) fn resolve_identity(
@@ -122,6 +125,17 @@ pub(crate) fn verify_package(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn package_download_names_do_not_contain_native_tildes() {
+        assert_eq!(
+            asset_name(&Version::parse("2.0.0-beta.2.ci").unwrap()).unwrap(),
+            "lg-buddy-2.0.0-beta.2.ci-1.x86_64.rpm"
+        );
+        assert_eq!(
+            asset_name(&Version::parse("2.0.0").unwrap()).unwrap(),
+            "lg-buddy-2.0.0-1.x86_64.rpm"
+        );
+    }
     #[test]
     fn versions_preserve_supported_semver_order() {
         for (version, wanted) in [
