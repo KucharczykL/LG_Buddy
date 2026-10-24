@@ -315,6 +315,22 @@ do
     assert_file "$installed_path"
 done
 
+# Exercise the pinned updater with a real custom-path installation. The
+# candidate must retain it for future user launches, without a global fallback.
+CUSTOM_CONFIG_DIR="$HOME_DIR/saved TV configuration"
+mv "$(dirname "$CONFIG_FILE")" "$CUSTOM_CONFIG_DIR"
+ORIGINAL_CONFIG_FILE="$CONFIG_FILE"
+CONFIG_FILE="$CUSTOM_CONFIG_DIR/config.env"
+NATIVE_TOKEN_FILE="$CUSTOM_CONFIG_DIR/tvs/primary/access-token.json"
+printf '%s\n' "$CONFIG_FILE" >"$INSTALLED_POINTER"
+for override in "$SYSTEM_SERVICE_OVERRIDE" "$LIFECYCLE_SERVICE_OVERRIDE" "$USER_SCREEN_OVERRIDE" "$USER_UPDATE_OVERRIDE"; do
+    python3 - "$override" "$ORIGINAL_CONFIG_FILE" "$CONFIG_FILE" <<'PYCONFIG'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+path.write_text(path.read_text().replace(sys.argv[2], sys.argv[3]))
+PYCONFIG
+done
+
 export LG_BUDDY_CONFIG="$CONFIG_FILE"
 "$INSTALLED_BINARY" settings set screen.backend swayidle
 "$INSTALLED_BINARY" settings set screen.idle_timeout 900
@@ -379,7 +395,10 @@ fi
 grep -F -q 'upgrade preflight: refused' "$REFUSAL_OUTPUT"
 grep -F -q "$SYSTEM_SERVICE" "$REFUSAL_OUTPUT"
 [ ! -e "$SUDO_MARKER" ] || fail "Initial preflight refusal invoked sudo."
-if grep -E -q 'AF_INET|AF_INET6' "$NETWORK_TRACE"; then
+# libalpm probes IPv6 support by opening an unused socket during ownership
+# queries. Socket creation alone sends nothing; addressed network calls still
+# fail this control, including connect/sendto/sendmsg.
+if awk '/AF_INET/ && !/socket\(AF_INET6?,/ { attempted = 1 } END { exit !attempted }' "$NETWORK_TRACE"; then
     fail "Initial preflight refusal attempted network access."
 fi
 REFUSAL_TREE_AFTER="$(tree_digest "$INSTALL_ROOT" "$HOME_DIR")"
@@ -403,7 +422,7 @@ fi
 grep -F -q 'upgrade preflight: refused' "$CANDIDATE_REFUSAL_OUTPUT"
 grep -F -q "$CANDIDATE_SERVICE" "$CANDIDATE_REFUSAL_OUTPUT"
 [ ! -e "$SUDO_MARKER" ] || fail "Candidate preflight refusal invoked sudo."
-if grep -E -q 'AF_INET|AF_INET6' "$CANDIDATE_NETWORK_TRACE"; then
+if awk '/AF_INET/ && !/socket\(AF_INET6?,/ { attempted = 1 } END { exit !attempted }' "$CANDIDATE_NETWORK_TRACE"; then
     fail "Candidate preflight refusal attempted network access."
 fi
 CANDIDATE_REFUSAL_TREE_AFTER="$(tree_digest "$INSTALL_ROOT" "$HOME_DIR")"
@@ -471,7 +490,13 @@ cmp -s "$EXPECTED_SERVICE_ACTION_LOG" "$SERVICE_ACTION_LOG" || {
 
 cmp -s "$CONFIG_SNAPSHOT" "$CONFIG_FILE" || fail "Cross-version upgrade changed the user configuration."
 cmp -s "$POINTER_SNAPSHOT" "$INSTALLED_POINTER" || fail "Cross-version upgrade changed the installed config pointer."
+cmp -s "$POINTER_SNAPSHOT" "$INSTALL_ROOT/etc/lg-buddy/config-path" || fail "Upgrade did not preserve the selected config in the new machine binding."
+[ "$(stat -c %a "$INSTALL_ROOT/etc/lg-buddy/config-path")" = 644 ] || fail "Machine binding mode is not 644."
+
 cmp -s "$TOKEN_SNAPSHOT" "$NATIVE_TOKEN_FILE" || fail "Cross-version upgrade changed the native credential."
+[ "$(env -u LG_BUDDY_CONFIG "$INSTALLED_BINARY" settings get tv.ip)" = 192.168.50.21 ] || fail "User launch lost the migrated custom config path."
+[ ! -e "$XDG_CONFIG_HOME/lg-buddy/config.env" ] || fail "Upgrade copied the custom config to the default path."
+
 [ ! -e "$INSTALL_ROOT/usr/bin/LG_Buddy_PIP" ] || fail "Cross-version native upgrade left the obsolete Python environment."
 
 cmp -s "$CANDIDATE_BUNDLE/lg-buddy" "$INSTALLED_BINARY"

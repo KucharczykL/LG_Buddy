@@ -11,7 +11,7 @@ Compiling the Rust runtime requires:
 
 Compiling and testing the GTK frontend additionally requires:
 
-- GTK 4.10 or newer development files
+- GTK 4.14 or newer development files
 - libadwaita 1.5 or newer development files
 - `pkg-config`
 - `glib-compile-resources` (provided by the GLib development tools)
@@ -134,6 +134,16 @@ The resulting binary will be at:
 
 ## Install a Locally Built Binary
 
+For package-managed layouts, first-run activation and ownership boundaries,
+see the [package ownership contract](package-ownership.md). Debian/RPM delivery
+builds on that contract; the installer below remains the release-bundle path.
+The [Debian package development guide](debian-package.md) covers the local
+package builder, APT updater and isolated lifecycle checks. The
+[Ubuntu VM qualification](debian-vm-validation.md) records real desktop,
+service-manager, polkit and reboot coverage separately under #134.
+The [RPM package development guide](rpm-package.md) covers the Fedora 43
+package builder and isolated native lifecycle checks under #135.
+
 `install.sh` is installer-only. It does not build the runtime or GUI.
 
 To install binaries you built yourself:
@@ -150,7 +160,38 @@ To install from a release bundle instead, extract the archive and run:
 ./install.sh
 ```
 
+Before changing anything, the bundle installer checks its complete system write
+and removal plan with the candidate runtime's private `installer-preflight`
+command. It queries each destination through the shared package database and
+uses filesystem mount facts to reject read-only targets. Owned or conflicting
+paths and unavailable ownership information all refuse installation with a
+path-specific error. Recursive cleanup and copied KWin payload members are
+included, even when the destination does not exist yet.
+Legacy service enablement and alias links are collected before preflight and
+only those checked links are removed during cleanup.
+
+This check runs before dependency installation, temporary installation files,
+user config/selection writes, or service changes. The authorized graphical
+upgrade helper repeats it before system mutations. A preflight refusal leaves
+the installation and user state unchanged; a later I/O failure still follows
+the existing partial-upgrade recovery contract. Existing shared directories
+are reused without changing their modes.
+
 ## Validation
+
+The updater uses the same fallible package database as installer preflight.
+Recognized bundles use the bundle installer. A healthy `lg-buddy` Debian package
+uses verified local-package acquisition and APT; the RPM package uses DNF5.
+Pacman installations receive package-source guidance, and unverifiable ownership refuses automatic installation.
+Ownership is checked before release discovery and again after acquisition,
+before candidate checks or installer execution. GUI update checks remain
+available; supported delivery owners share the install action.
+
+Native adapter details and qualification limits are in the Debian and RPM
+guides; [release publication](release-process.md#native-release-assets) integrates
+both packages under #136. Downloadable release
+packages do not configure a repository or promise that `apt upgrade` or
+`dnf upgrade` discovers LG Buddy releases.
 
 Useful checks during development:
 
@@ -172,11 +213,17 @@ The GUI launch checks cover both no-argument normal Overview launch and the
 brightness deep link, including focus handoff from another view. Installed
 smoke keeps the desktop entry, runtime, and GUI together.
 
-PR CI runs verification and the KWin checks first, then builds the candidate
-bundle and GUI journey fixtures once. Ubuntu bundle checks and Fedora/Arch
-checks consume those artifacts in parallel. The required `bundle-smoke-test`
-check also fails if artifact production fails or is skipped. No installed or
-cross-version checks are omitted.
+PR CI runs verification and the KWin checks first. Verification builds GUI
+journey fixtures using its existing GNU debug dependency graph; the bundle job
+builds only the optimized runtime and GUI. Ubuntu runs the release-bundle,
+installed GUI, historical upgrade and v1.8 startup-migration suites in separate
+matrix jobs, each with a
+20-minute limit. Those jobs and Fedora/Arch checks consume the same artifacts
+in parallel. The required `bundle-smoke-test` check passes only when artifact
+production, every Ubuntu smoke suite, both native package jobs and complete
+release-asset assembly succeed;
+failures, timeouts, and skipped
+jobs fail the check.
 
 The root ownership checks execute the library test binary that Cargo already
 built for the ordinary suite. The TV fixture shares the GNU debug build and
@@ -313,10 +360,15 @@ with:
 python3 scripts/test_publish_release_assets.py
 ```
 
-Dry-run the GitHub release draft-staging step with:
+After building both native packages from the same release bundle on their
+supported baselines, generate and verify the complete asset set on Fedora 43
+with `dpkg`, `rpm` and Python installed. Supply the exact binary source commit
+and a supported release version; the helper refuses mismatched identities.
+The publisher dry run performs these checks without writing to GitHub:
 
 ```bash
-GH_RELEASE_DRY_RUN=1 ./scripts/publish-release-assets.sh stage-draft --dist-dir ./dist --tag v<version>
+python3 scripts/release_assets.py --dist-dir ./dist --tag "v$RELEASE_VERSION" --commit "$RELEASE_COMMIT" --write-checksums
+GH_RELEASE_DRY_RUN=1 ./scripts/publish-release-assets.sh stage-draft --dist-dir ./dist --tag "v$RELEASE_VERSION" --commit "$RELEASE_COMMIT"
 ```
 
 Official releases are created only through a reviewed `dev` promotion PR. For

@@ -66,8 +66,18 @@ existing fallback chain.
 
 Plugin files use a per-user, content-addressed name in the system Qt plugin
 directory. Installation uses the existing privilege route, verifies the copied
-bytes and refuses package-owned files. Distinct names allow local compilation
-after Qt has rejected another candidate. Successful loading enables that exact
+bytes and shares the bundle installer's ownership/mount guard. These files are
+the named host-integration-artifact exception to the
+[package ownership contract](package-ownership.md#kwin-artifacts):
+KWin's loader requires them under `/usr/lib*/qt6/plugins/kwin/plugins`. Both
+installation and removal refuse package-owned files, conflicting ownership,
+unavailable package-database answers, read-only mounts and immutable/declarative
+host markers before changing the artifact. Existing package-owned container
+directories are only traversed; their ownership and permissions are preserved.
+During provisioning, the shipped payload remains verify-only. A bundled prebuilt
+and a cached local build use the same guarded copy into KWin's loader location.
+Distinct names allow local compilation after Qt has rejected another candidate.
+Successful loading enables that exact
 plugin in the user's `kwinrc` for subsequent Plasma logins.
 
 Local builds live under `$XDG_CACHE_HOME/lg-buddy/kwin` (normally

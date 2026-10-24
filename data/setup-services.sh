@@ -15,6 +15,9 @@ package_owned() {
 
 write_if_changed() {
     local destination="$1" mode="$2" temporary
+    if [ "${ownership:-}" = package ]; then
+        verify_package_destination "$destination" || return 1
+    fi
     [ ! -L "$destination" ] || return 1
     mkdir -p -- "$(dirname -- "$destination")" || return 1
     temporary="$(mktemp "${destination}.XXXXXX")" || return 1
@@ -68,8 +71,133 @@ cleanup_legacy_sleep_wake_handlers() {
     done
 }
 
+# Ask the installed runtime's shared, fallible ownership probe. This is
+# reobserved under privilege; a frontend cannot select its own repair mode.
+service_setup_ownership() {
+    /usr/bin/lg-buddy service-setup-ownership "$@"
+}
+
+lifecycle_hook() {
+    printf '%s\n' '#!/bin/sh' 'set -eu' '[ "${2:-}" = pre-down ] || exit 0' 'exec /usr/bin/lg-buddy nm-pre-down'
+}
+
+verify_package_assets() {
+    local directory unit path
+    for directory in system user; do
+        if [ "$directory" = system ]; then
+            local units=(LG_Buddy.service LG_Buddy_lifecycle.service)
+        else
+            local units=(LG_Buddy_screen.service LG_Buddy_update_check.service LG_Buddy_update_check.timer)
+        fi
+        for unit in "${units[@]}"; do
+            path="$setup_root/usr/lib/systemd/$directory/$unit"
+            verify_package_file "$path" 644 "$payload/$unit" || return 1
+        done
+    done
+    verify_package_file "$setup_root/usr/lib/tmpfiles.d/lg_buddy.conf" 644 "$payload/lg_buddy.conf" || return 1
+    verify_package_file "$setup_root/usr/lib/NetworkManager/dispatcher.d/pre-down.d/LG_Buddy_lifecycle" 755 <(lifecycle_hook) || return 1
+    for path in \
+        etc/systemd/system/LG_Buddy.service \
+        etc/systemd/system/LG_Buddy_lifecycle.service \
+        etc/systemd/user/LG_Buddy_screen.service \
+        etc/systemd/user/LG_Buddy_update_check.service \
+        etc/systemd/user/LG_Buddy_update_check.timer \
+        etc/tmpfiles.d/lg_buddy.conf \
+        etc/NetworkManager/dispatcher.d/pre-down.d/LG_Buddy_lifecycle \
+        etc/systemd/system/LG_Buddy_wake.service \
+        etc/systemd/system/LG_Buddy_sleep.service \
+        etc/systemd/system/LG_Buddy_wake.service.d/config.conf \
+        etc/systemd/system/LG_Buddy_sleep.service.d/config.conf \
+        etc/NetworkManager/dispatcher.d/pre-down.d/LG_Buddy_sleep \
+        usr/lib/systemd/system-sleep/LG_Buddy_sleep_hook; do
+        if [ -e "$setup_root/$path" ] || [ -L "$setup_root/$path" ]; then
+            echo "Remove conflicting local integration through your system package manager: $setup_root/$path" >&2
+            return 1
+        fi
+    done
+}
+
+verify_package_file() {
+    local path="$1" mode="$2" expected="$3"
+    if [ ! -f "$path" ] || [ -L "$path" ] \
+        || [ "$(stat -c %a -- "$path")" != "$mode" ] \
+        || [ "$(stat -c %u -- "$path")" != "$EUID" ] \
+        || ! cmp -s -- "$expected" "$path"; then
+        echo "Package asset is missing or does not match: $path; repair the LG Buddy package." >&2
+        return 1
+    fi
+}
+
+verify_package_destination() {
+    local destination="$1" ancestor="$1" resolved
+    # Check the file and all existing ancestors, including dangling links.
+    # Ownership of a lexical /etc path cannot authorize a redirected /usr write.
+    while [ -n "$ancestor" ]; do
+        if [ -L "$ancestor" ]; then
+            echo "Refusing a symlink in package configuration path: $ancestor" >&2
+            return 1
+        fi
+        [ "$ancestor" != / ] || break
+        ancestor="${ancestor%/*}"
+    done
+    resolved="$(readlink -m -- "$destination")" || return 1
+    if [ "$resolved" != "$destination" ]; then
+        echo "Refusing a non-canonical package configuration path: $destination" >&2
+        return 1
+    fi
+}
+
+verify_binding_destination() {
+    local destination="$1" ancestor="${1%/*}" boundary="${setup_root:-/}" mode
+    verify_package_destination "$destination" || return 1
+    while [[ "$ancestor" = "$boundary" || "$ancestor" = "$boundary/"* || "$boundary" = / ]]; do
+        if [ -e "$ancestor" ]; then
+            mode="$(stat -c %a -- "$ancestor")" || return 1
+            if [ ! -d "$ancestor" ] || [ "$(stat -c %u -- "$ancestor")" != "$EUID" ] \
+                || (( (8#$mode & 8#022) != 0 )) || [ ! -w "$ancestor" ]; then
+                echo "Unsafe machine binding directory: $ancestor" >&2
+                return 1
+            fi
+        fi
+        [ "$ancestor" != / ] || break
+        ancestor="${ancestor%/*}"
+        [ -n "$ancestor" ] || ancestor=/
+    done
+    if [ -e "$destination" ]; then
+        mode="$(stat -c %a -- "$destination")" || return 1
+        if [ ! -f "$destination" ] || [ "$(stat -c %u -- "$destination")" != "$EUID" ] \
+            || (( (8#$mode & 8#022) != 0 )); then
+            echo "Unsafe machine binding file: $destination" >&2
+            return 1
+        fi
+    fi
+}
+
 repair_services() {
-    local config="$1" escaped unit load_state
+    local config="$1" escaped unit load_state ownership tmpfiles
+    ownership="$(service_setup_ownership)" || return 1
+    case "$ownership" in
+        package)
+            verify_package_assets || return 1
+            for unit in LG_Buddy.service LG_Buddy_lifecycle.service; do
+                local destination="$setup_root/etc/systemd/system/$unit.d/config.conf" verdict
+                verify_package_destination "$destination" || return 1
+                verdict="$(service_setup_ownership "$destination")" || return 1
+                if [ "$verdict" != unowned ]; then
+                    echo "Refusing to replace package-owned configuration: $destination" >&2
+                    return 1
+                fi
+            done
+            ;;
+        unowned) ;;
+        *) echo "Service setup ownership could not be verified." >&2; return 1 ;;
+    esac
+    # Both installation modes maintain the same machine binding. Validate it
+    # before stopping services or changing any integration files.
+    local binding="$setup_root/etc/lg-buddy/config-path" verdict
+    verify_binding_destination "$binding" || return 1
+    verdict="$(service_setup_ownership "$binding")" || return 1
+    [ "$verdict" = unowned ] || { echo "Machine binding is package-owned: $binding" >&2; return 1; }
     # Loaded Environment properties do not describe an already-running process.
     # Stop before writing/reloading so interruption leaves an inactive service
     # that the next read-only setup check can identify and repair.
@@ -77,26 +205,31 @@ repair_services() {
     if [ "$load_state" != not-found ]; then
         systemctl stop LG_Buddy_lifecycle.service || return 1
     fi
-    cleanup_legacy_sleep_wake_handlers || return 1
+    if [ "$ownership" = unowned ]; then
+        cleanup_legacy_sleep_wake_handlers || return 1
+    fi
     # Values are literal systemd Environment content, never shell source.
     escaped="${config//\\/\\\\}"
     escaped="${escaped//\"/\\\"}"
     escaped="${escaped//%/%%}"
     for unit in LG_Buddy.service LG_Buddy_lifecycle.service; do
-        write_if_changed "$setup_root/etc/systemd/system/$unit" 644 < "$payload/$unit" || return 1
+        if [ "$ownership" = unowned ]; then
+            write_if_changed "$setup_root/etc/systemd/system/$unit" 644 < "$payload/$unit" || return 1
+        fi
         write_if_changed "$setup_root/etc/systemd/system/$unit.d/config.conf" 644 < <(printf '[Service]\nEnvironment="LG_BUDDY_CONFIG=%s"\n' "$escaped") || return 1
     done
-    write_if_changed "$setup_root/etc/tmpfiles.d/lg_buddy.conf" 644 < "$payload/lg_buddy.conf" || return 1
-    write_if_changed "$setup_root/usr/lib/lg-buddy/config-path" 644 < <(printf '%s\n' "$config") || return 1
-    write_if_changed "$setup_root/etc/NetworkManager/dispatcher.d/pre-down.d/LG_Buddy_lifecycle" 755 <<'HOOK' || return 1
-#!/bin/sh
-set -eu
-[ "${2:-}" = pre-down ] || exit 0
-exec /usr/bin/lg-buddy nm-pre-down
-HOOK
+    if [ "$ownership" = unowned ]; then
+        write_if_changed "$setup_root/etc/tmpfiles.d/lg_buddy.conf" 644 < "$payload/lg_buddy.conf" || return 1
+        write_if_changed "$setup_root/etc/NetworkManager/dispatcher.d/pre-down.d/LG_Buddy_lifecycle" 755 < <(lifecycle_hook) || return 1
+        tmpfiles="$setup_root/etc/tmpfiles.d/lg_buddy.conf"
+    else
+        tmpfiles="$setup_root/usr/lib/tmpfiles.d/lg_buddy.conf"
+    fi
+    verify_binding_destination "$binding" || return 1
+    write_if_changed "$binding" 644 < <(printf '%s\n' "$config") || return 1
     # Always reload after repair; this also recovers an interrupted prior write.
     systemctl daemon-reload || return 1
-    systemd-tmpfiles --create "$setup_root/etc/tmpfiles.d/lg_buddy.conf" || return 1
+    systemd-tmpfiles --create "$tmpfiles" || return 1
     for unit in LG_Buddy.service LG_Buddy_lifecycle.service; do
         systemctl is-enabled --quiet "$unit" || systemctl enable "$unit" || return 1
     done

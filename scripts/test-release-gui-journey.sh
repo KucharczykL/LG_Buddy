@@ -90,7 +90,7 @@ run_installed_gui_journey() {
     local old_path="$PATH"
     local old_skip="${LG_BUDDY_SKIP_SYSTEMD_ACTIONS:-0}"
     local CONFIG_FILE LG_BUDDY_CONFIG
-    CONFIG_FILE="$(cat "$LG_BUDDY_INSTALL_ROOT/usr/lib/lg-buddy/config-path")"
+    CONFIG_FILE="$(cat "$LG_BUDDY_INSTALL_ROOT/etc/lg-buddy/config-path")"
     LG_BUDDY_CONFIG="$CONFIG_FILE"
     export LG_BUDDY_CONFIG
     local token="$(dirname "$CONFIG_FILE")/tvs/primary/access-token.json"
@@ -149,6 +149,22 @@ if { [ "${1:-}" = /usr/bin/systemctl ] || [ "${1:-}" = /run/current-system/sw/bi
     [ "${2:-}" = start ] && [ "${3:-}" = LG_Buddy_lifecycle.service ]; then
     shift
     exec "$LG_BUDDY_SYSTEMCTL" "$@"
+fi
+# Ubuntu RPM uses ~/.rpmdb: namespace UID 0 must see the invoking user's
+# home too. System-wide databases (Fedora/Arch) need no mount namespace.
+if [ -x /usr/bin/rpm ]; then
+    caller_home="$(getent passwd "$(id -u)" | cut -d: -f6)"
+    rpm_db="$(env -u HOME -u XDG_CONFIG_HOME -u RPM_CONFIGDIR /usr/bin/rpm --eval '%_dbpath')"
+    case "$rpm_db" in
+        "$caller_home"/*)
+            root_home="$(getent passwd 0 | cut -d: -f6)"
+            exec unshare -Urm sh -c '
+                mount --bind "$1" "$2"
+                shift 2
+                exec "$@"
+            ' sh "$caller_home" "$root_home" "$@"
+            ;;
+    esac
 fi
 exec unshare -Ur "$@"
 SH

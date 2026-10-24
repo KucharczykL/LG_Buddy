@@ -18,6 +18,7 @@ use std::{
 pub(super) struct SetupContext {
     pub config: PathBuf,
     pub user_units: PathBuf,
+    pub user_selection: PathBuf,
     pub system_root: PathBuf,
     pub kwin_helper: PathBuf,
     pub lock_path: PathBuf,
@@ -39,6 +40,8 @@ impl SetupContext {
         let config = std::path::absolute(config).map_err(context_failure)?;
         Ok(Self {
             config,
+            user_selection: crate::config::user_binding_path_from_env()
+                .ok_or_else(|| context_failure("User config home is unavailable."))?,
             user_units: user_units_directory(&home, env::var_os("XDG_CONFIG_HOME")),
             system_root: PathBuf::from("/"),
             kwin_helper: installed_kwin_helper(&env::current_exe().map_err(context_failure)?),
@@ -74,6 +77,7 @@ fn user_units_directory(home: &Path, xdg_config_home: Option<OsString>) -> PathB
 pub(super) struct NativeSteps<C = SystemdUserServiceController> {
     pub context: SetupContext,
     pub controller: C,
+    pub package_database: crate::upgrade_preflight::PackageDatabase,
 }
 
 pub(super) fn restart_verifier() -> Result<(), StepFailure> {
@@ -125,6 +129,7 @@ impl NativeSteps {
         Self {
             context,
             controller: SystemdUserServiceController::from_env(),
+            package_database: crate::upgrade_preflight::PackageDatabase::system(),
         }
     }
 }
@@ -134,9 +139,28 @@ impl<C: ServiceController> NativeSteps<C> {
         super::provision::ServiceInstallation {
             config: &self.context.config,
             user_units: &self.context.user_units,
+            user_selection: &self.context.user_selection,
             system_root: &self.context.system_root,
             controller: &self.controller,
             authorization: self.context.authorization,
+            ownership: self.service_ownership(),
+            package_database: &self.package_database,
+        }
+    }
+    fn service_ownership(
+        &self,
+    ) -> Result<
+        crate::upgrade_preflight::PathOwnership,
+        crate::upgrade_preflight::PackageDatabaseError,
+    > {
+        // Immutable installation assessment retains its existing external repair boundary.
+        if self.context.system_root.join("etc/NIXOS").exists()
+            || self.context.system_root.join("run/ostree-booted").exists()
+        {
+            Ok(crate::upgrade_preflight::PathOwnership::Unowned)
+        } else {
+            self.package_database
+                .owner_of(&self.context.system_root.join("usr/bin/lg-buddy"))
         }
     }
     fn plasma(&self) -> super::kwin::KWinSetup<'_> {
@@ -197,9 +221,12 @@ impl<C: ServiceController + Send> SetupSteps for NativeSteps<C> {
                         super::provision::ServiceInstallation {
                             config: &self.context.config,
                             user_units: &self.context.user_units,
+                            user_selection: &self.context.user_selection,
                             system_root: &self.context.system_root,
                             controller,
                             authorization: self.context.authorization,
+                            ownership: self.service_ownership(),
+                            package_database: &self.package_database,
                         }
                         .execute(cancellation, progress)
                     },

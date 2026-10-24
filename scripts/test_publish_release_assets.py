@@ -19,6 +19,7 @@ from release_bundle_manifest import (
     render_manifest,
 )
 from test_release_bundle_manifest import embedded_binary
+from test_release_assets import decoder_fixtures, package_fixtures
 
 
 VERSION = "9.8.7-beta.1"
@@ -76,7 +77,7 @@ if command == "view":
                 content = (asset_dir / name).read_bytes()
                 assets.append({
                     "name": name,
-                    "state": "uploaded",
+                    "state": "starter" if os.environ.get("FAKE_GH_INCOMPLETE_ASSET") == name else "uploaded",
                     "size": len(content),
                     "digest": f"sha256:{hashlib.sha256(content).hexdigest()}",
                 })
@@ -187,10 +188,11 @@ class PublishReleaseAssetsTests(unittest.TestCase):
                 info.size = len(content)
                 bundle.addfile(info, io.BytesIO(content))
 
-        digest = hashlib.sha256(self.archive.read_bytes()).hexdigest()
+        self.packages = package_fixtures(self.dist, identity)
         self.checksums = self.dist / "sha256sums.txt"
         self.checksums.write_text(
-            f"{digest}  {self.archive.name}\n", encoding="utf-8"
+            ''.join(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n"
+                    for path in (self.archive, *self.packages)), encoding="utf-8"
         )
 
         fake_gh = self.fake_bin / "gh"
@@ -201,7 +203,7 @@ class PublishReleaseAssetsTests(unittest.TestCase):
         self.environment = os.environ.copy()
         self.environment.update(
             {
-                "PATH": f"{self.fake_bin}:{self.environment['PATH']}",
+                "PATH": f"{self.fake_bin}:{decoder_fixtures(self.root / 'native-tools')}",
                 "FAKE_GH_STATE": str(self.state_path),
                 "FAKE_GH_ASSETS": str(self.remote_assets),
                 "FAKE_GH_LOG": str(self.log_path),
@@ -298,10 +300,8 @@ class PublishReleaseAssetsTests(unittest.TestCase):
         return [call for call in self.calls() if call[:2] == ["release", command]]
 
     def complete_assets(self) -> dict[str, bytes]:
-        return {
-            self.archive.name: self.archive.read_bytes(),
-            self.checksums.name: self.checksums.read_bytes(),
-        }
+        return {path.name: path.read_bytes()
+                for path in (self.archive, *self.packages, self.checksums)}
 
     def test_new_release_is_staged_as_a_complete_draft(self) -> None:
         result = self.run_publisher()
@@ -314,7 +314,7 @@ class PublishReleaseAssetsTests(unittest.TestCase):
         uploads = self.mutations("upload")
         self.assertEqual(len(create), 1)
         self.assertIn("--draft", create[0])
-        self.assertEqual(len(uploads), 2)
+        self.assertEqual(len(uploads), 4)
         self.assertEqual(self.mutations("edit"), [])
         self.assertLess(self.calls().index(create[0]), self.calls().index(uploads[0]))
 
@@ -393,6 +393,42 @@ class PublishReleaseAssetsTests(unittest.TestCase):
         self.assertIn(f"Release asset {self.checksums.name} has digest", result.stdout)
         self.assertTrue(self.state()["draft"])
         self.assertEqual(self.mutations("edit"), [])
+
+    def test_missing_local_native_package_refuses_before_github_access(self) -> None:
+        for package in self.packages:
+            with self.subTest(package=package.name):
+                content = package.read_bytes()
+                package.unlink()
+                result = self.run_publisher()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('inventory differs', result.stdout)
+                self.assertEqual(self.calls(), [])
+                package.write_bytes(content)
+
+    def test_incomplete_native_upload_blocks_publication(self) -> None:
+        for package in self.packages:
+            with self.subTest(package=package.name):
+                self.write_state(exists=True, assets=self.complete_assets())
+                self.environment['FAKE_GH_INCOMPLETE_ASSET'] = package.name
+                result = self.run_publisher('publish-draft')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('not fully uploaded', result.stdout)
+                self.assertTrue(self.state()['draft'])
+                self.assertEqual(self.mutations('edit'), [])
+
+    def test_native_digest_mismatch_blocks_publication(self) -> None:
+        for package in self.packages:
+            with self.subTest(package=package.name):
+                assets = self.complete_assets()
+                content = bytearray(assets[package.name])
+                content[0] ^= 1
+                assets[package.name] = bytes(content)
+                self.write_state(exists=True, assets=assets)
+                result = self.run_publisher('publish-draft')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(f'Release asset {package.name} has digest', result.stdout)
+                self.assertTrue(self.state()['draft'])
+                self.assertEqual(self.mutations('edit'), [])
 
     def test_complete_published_release_is_staging_verification_only(self) -> None:
         self.write_state(exists=True, draft=False, assets=self.complete_assets())

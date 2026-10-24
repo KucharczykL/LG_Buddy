@@ -2,6 +2,9 @@
 //! The authorization owner brokers privileged operations; this process owns the
 //! per-user setup lock throughout installation, compilation, and removal.
 use crate::kwin_bridge::{self, KWinBridgeCommand};
+use crate::upgrade_preflight::{
+    installer::check_host_artifact, OsFilesystemFacts, PackageDatabase,
+};
 use sha2::{Digest, Sha256};
 use std::{
     ffi::OsString,
@@ -607,21 +610,6 @@ fn build(source: &Path, cache: &Path, expected: &str, log: Option<&File>) -> Res
     Ok(())
 }
 
-fn package_owned(path: &Path) -> bool {
-    [
-        ("/usr/bin/rpm", vec!["-qf", "--"]),
-        ("/usr/bin/dpkg-query", vec!["-S"]),
-        ("/usr/bin/pacman", vec!["-Qo", "--"]),
-    ]
-    .into_iter()
-    .any(|(program, args)| {
-        Command::new(program)
-            .args(args)
-            .arg(path)
-            .output()
-            .is_ok_and(|o| o.status.success())
-    })
-}
 fn system_action(args: &[OsString]) -> Result<()> {
     if unsafe { libc::geteuid() } != 0 {
         return Err(1);
@@ -656,9 +644,14 @@ fn system_action(args: &[OsString]) -> Result<()> {
         return Err(1);
     }
     let destination = directory.join(format!("{id}.so"));
-    if package_owned(&destination) {
-        return Err(1);
-    }
+    check_host_artifact(
+        &OsFilesystemFacts,
+        &PackageDatabase::system(),
+        Path::new("/"),
+        &destination,
+        action == "--system-remove",
+    )
+    .map_err(failure)?;
     if action == "--system-remove" {
         return match fs::remove_file(destination) {
             Ok(()) => Ok(()),

@@ -1,0 +1,13 @@
+Package: lg-buddy
+Version: @VERSION@
+Architecture: amd64
+Section: utils
+Priority: optional
+Maintainer: Vas Zayarskiy <7261268+Staphylococcus@users.noreply.github.com>
+Homepage: https://github.com/Staphylococcus/LG_Buddy
+Depends: @DEPENDS@
+Installed-Size: @SIZE@
+Description: Native LG webOS TV integration for Linux desktops
+ Controls an LG webOS TV through a native runtime and GTK frontend, with
+ desktop activity monitoring and optional GNOME and KWin integrations.
+ Open LG Buddy after installation to configure the application and services.

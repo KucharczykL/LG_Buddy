@@ -1,13 +1,5 @@
 #!/bin/bash
 
-LG_BUDDY_INSTALL_ROOT="${LG_BUDDY_INSTALL_ROOT:-}"
-LG_BUDDY_INSTALL_ROOT="${LG_BUDDY_INSTALL_ROOT%/}"
-if [ -n "$LG_BUDDY_INSTALL_ROOT" ]; then
-    LG_BUDDY_INSTALL_DIR="${LG_BUDDY_INSTALL_ROOT}/usr/lib/lg-buddy"
-else
-    LG_BUDDY_INSTALL_DIR="/usr/lib/lg-buddy"
-fi
-LG_BUDDY_POINTER_FILE="${LG_BUDDY_INSTALL_DIR}/config-path"
 LG_BUDDY_DEFAULT_TV_PLATFORM="bscpylgtv"
 LG_BUDDY_DEFAULT_SCREEN_BACKEND="auto"
 LG_BUDDY_DEFAULT_SCREEN_IDLE_BLANK="enabled"
@@ -19,43 +11,52 @@ LG_BUDDY_DEFAULT_SYSTEM_SLEEP_WAKE_POLICY="enabled"
 LG_BUDDY_DEFAULT_UPDATE_AUTO_CHECK="enabled"
 LG_BUDDY_DEFAULT_UPDATE_CHANNEL="stable"
 
-lg_buddy_user_config_path() {
-    if [ -n "${LG_BUDDY_CONFIG:-}" ]; then
-        echo "$LG_BUDDY_CONFIG"
-    elif [ -n "${XDG_CONFIG_HOME:-}" ]; then
-        echo "${XDG_CONFIG_HOME}/lg-buddy/config.env"
-    elif [ -n "${HOME:-}" ]; then
-        echo "${HOME}/.config/lg-buddy/config.env"
+lg_buddy_user_config_home() {
+    local user_home=""
+    if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
+        user_home="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
+    fi
+    if [ -n "$user_home" ]; then
+        printf '%s/.config\n' "$user_home"
     else
-        return 1
+        case "${XDG_CONFIG_HOME:-}" in
+            /*) printf '%s\n' "$XDG_CONFIG_HOME" ;;
+            *) [ -n "${HOME:-}" ] && printf '%s/.config\n' "$HOME" ;;
+        esac
+    fi
+}
+
+lg_buddy_user_config_path() {
+    local config_home record config_path owner
+    if [ -n "${LG_BUDDY_CONFIG:-}" ]; then
+        printf '%s\n' "$LG_BUDDY_CONFIG"
+        return 0
+    fi
+    config_home="$(lg_buddy_user_config_home)" || return 1
+    record="$config_home/lg-buddy/config-path"
+    if [ -e "$record" ] || [ -L "$record" ]; then
+        owner="$(id -u)"
+        if [ "$owner" -eq 0 ] && [ -n "${SUDO_UID:-}" ]; then owner="$SUDO_UID"; fi
+        if [ ! -f "$record" ] || [ -L "$record" ] \
+            || [ "$(readlink -m -- "$record")" != "$record" ] \
+            || [ "$(stat -c %u -- "$record")" != "$owner" ] \
+            || (( (8#$(stat -c %a -- "$record") & 8#022) != 0 )); then
+            echo "Invalid user config selection: $record" >&2
+            return 1
+        fi
+        config_path="$(cat -- "$record")"
+        case "$config_path" in
+            /*) ;;
+            *) echo "Invalid user config selection: $record" >&2; return 1 ;;
+        esac
+        [[ "$config_path" != *$'\n'* && "$config_path" != *$'\r'* ]] || return 1
+        printf '%s\n' "$config_path"
+    else
+        printf '%s/lg-buddy/config.env\n' "$config_home"
     fi
 }
 
 lg_buddy_effective_config_path() {
-    local config_path=""
-    local user_home=""
-
-    if [ -n "${LG_BUDDY_CONFIG:-}" ]; then
-        echo "$LG_BUDDY_CONFIG"
-        return 0
-    fi
-
-    if [ -r "$LG_BUDDY_POINTER_FILE" ]; then
-        read -r config_path <"$LG_BUDDY_POINTER_FILE"
-        if [ -n "$config_path" ]; then
-            echo "$config_path"
-            return 0
-        fi
-    fi
-
-    if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
-        user_home="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
-        if [ -n "$user_home" ]; then
-            echo "${user_home}/.config/lg-buddy/config.env"
-            return 0
-        fi
-    fi
-
     lg_buddy_user_config_path
 }
 

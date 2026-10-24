@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from release_assets import asset_names
 
 from record_github_release_responses import (
     API_VERSION,
@@ -210,6 +211,33 @@ class ResponseRecordingTests(unittest.TestCase):
             recorder.paths,
             ["repos/Staphylococcus/LG_Buddy/releases?per_page=1"],
         )
+
+    def test_package_recording_captures_all_four_asset_redirects(self) -> None:
+        recorder = FixtureRecorder()
+        for identifier, name in enumerate(asset_names('1.4.0-beta.2')[1:3], 3):
+            recorder.release['assets'].append({
+                'id': identifier, 'name': name, 'state': 'uploaded', 'size': 200,
+                'digest': 'sha256:' + 'a' * 64,
+                'url': f'https://api.github.test/assets/{identifier}',
+                'browser_download_url': f'https://github.test/assets/{identifier}',
+            })
+        recorded = record_responses(recorder=recorder, repository='Staphylococcus/LG_Buddy',
+                                    tag='v1.4.0-beta.2', target='x86_64-unknown-linux-musl', packages=True)
+        self.assertEqual({entry['asset']['name'] for entry in recorded['asset_redirects']},
+                         set(asset_names('1.4.0-beta.2')))
+        self.assertEqual(len(recorded['release_by_tag']['body']['assets']), 4)
+
+    def test_package_recording_refuses_missing_native_assets(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, 'expected upgrade assets'):
+            record_responses(recorder=FixtureRecorder(), repository='Staphylococcus/LG_Buddy',
+                             tag='v1.4.0-beta.2', target='x86_64-unknown-linux-musl', packages=True)
+
+    def test_recording_refuses_duplicate_asset_names(self) -> None:
+        recorder = FixtureRecorder()
+        recorder.release['assets'].append(recorder.release['assets'][0].copy())
+        with self.assertRaisesRegex(RuntimeError, 'expected upgrade assets'):
+            record_responses(recorder=recorder, repository='Staphylococcus/LG_Buddy',
+                             tag='v1.4.0-beta.2', target='x86_64-unknown-linux-musl')
 
 
 if __name__ == "__main__":

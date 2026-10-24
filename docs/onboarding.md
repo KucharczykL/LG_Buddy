@@ -317,3 +317,43 @@ installation, authorization, repair and session changes. Tests assert resulting
 state and side effects as well as responses. Pairing success alone is never
 whole-system completion, and repeated successful setup requires no new pairing,
 configuration writes or authorization.
+
+## Package-owned service assets
+
+On mutable package-managed installations, setup observes ownership of
+`/usr/bin/lg-buddy` through the shared package-database probe. It verifies the
+system and user base units in `/usr/lib/systemd`, tmpfiles configuration in
+`/usr/lib/tmpfiles.d`, and the NetworkManager pre-down hook in
+`/usr/lib/NetworkManager/dispatcher.d/pre-down.d`. Missing, changed, or shadowed
+base assets require external package repair; setup does not recreate them.
+Conflicting ownership or a failed ownership query also blocks local repair.
+Package-mode drop-in paths must not contain symlinks, including directory
+ancestors: setup refuses redirected destinations before authorization or service
+changes, and checks them again before writing.
+
+Setup writes the system configuration drop-ins under `/etc/systemd/system`,
+the machine binding at `/etc/lg-buddy/config-path`, and the user's configuration
+drop-ins under their systemd user directory, then
+reloads, enables, and starts services through the existing first-run flow. The
+privileged helper independently checks ownership and vendor assets before
+changing system services. The root-owned machine binding contains only the
+canonical path to the selected user's config. Both package and release-bundle
+setup use it for the NetworkManager pre-down hook. Systemd services receive the
+same path explicitly in their drop-ins. NixOS and ostree retain their existing
+externally managed repair boundary.
+
+Ordinary GUI/CLI launches use `LG_BUDDY_CONFIG`, then the invoking user's
+`$XDG_CONFIG_HOME/lg-buddy/config-path` selection when present, then their
+`$XDG_CONFIG_HOME/lg-buddy/config.env` default (`$HOME/.config` when XDG is unset).
+They never discover another user's config through a machine binding. Authorized
+setup and installation remember custom paths in that user-owned selection;
+reading or changing settings does not rebind the machine.
+
+The bundle installer resolves existing bindings before fresh setup. A valid
+`/etc/lg-buddy/config-path` is authoritative. When it is absent, the old
+`/usr/lib/lg-buddy/config-path` is migration input only. The installer atomically
+seeds `/etc` before replacing the runtime or restarting services, preserves the
+old pointer for recovery, and remembers custom paths for the installing user.
+Invalid bindings, conflicting explicit selections, or another owner's config
+stop installation instead of starting fresh pairing. Settings and credentials
+remain in place.

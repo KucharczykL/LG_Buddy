@@ -7,6 +7,7 @@ use crate::presentation::brightness::UserFacingError;
 use crate::settings::{
     ServiceController, SettingValue, SettingsError, SettingsStore, UserServiceState,
 };
+use crate::upgrade_preflight::{PackageDatabaseError, PathOwnership};
 use std::fs;
 use std::io::{self, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -30,9 +31,12 @@ const NM_HOOK: &str =
 pub(crate) struct ServiceInstallation<'a, C> {
     pub config: &'a Path,
     pub user_units: &'a Path,
+    pub user_selection: &'a Path,
     pub system_root: &'a Path,
     pub authorization: crate::setup::flow::AuthorizationMode,
     pub controller: &'a C,
+    pub ownership: Result<PathOwnership, PackageDatabaseError>,
+    pub package_database: &'a crate::upgrade_preflight::PackageDatabase,
 }
 
 struct FileSpec {
@@ -52,6 +56,17 @@ fn file(path: PathBuf, contents: impl Into<String>, mode: u32) -> FileSpec {
 
 impl<C: ServiceController> ServiceInstallation<'_, C> {
     pub(crate) fn inspect(&self) -> StepResponse {
+        if let Err(error) = self.verify_package_assets() {
+            return StepResponse::Blocked(failure(
+                "Repair LG Buddy's package through the system package manager, then recheck setup.",
+                error,
+                SetupRecovery::new(
+                    Cause::ManagedInstallation,
+                    Boundary::SystemConfiguration,
+                    Action::RepairExternally,
+                ),
+            ));
+        }
         match self.ready() {
             Ok(true) => StepResponse::Complete,
             Ok(false)
@@ -192,24 +207,152 @@ impl<C: ServiceController> ServiceInstallation<'_, C> {
             "[Service]\nEnvironment=\"LG_BUDDY_CONFIG={escaped}\"\n"
         ))
     }
-    fn user_files(&self) -> Result<Vec<FileSpec>, SettingsError> {
-        let override_contents = self.override_contents()?;
-        Ok(vec![
-            file(
+    fn package_mode(&self) -> Result<bool, SettingsError> {
+        package_mode(self.ownership.clone())
+    }
+    fn verify_package_assets(&self) -> Result<(), SettingsError> {
+        if self.declarative_installation() || self.system_root.join("run/ostree-booted").exists() {
+            return Ok(());
+        }
+        crate::config::binding::validate_destination(
+            &self.system_root.join("etc/lg-buddy/config-path"),
+            if self.system_root == Path::new("/") {
+                0
+            } else {
+                unsafe { libc::geteuid() }
+            },
+            self.system_root,
+        )
+        .map_err(io_error)?;
+        crate::config::binding::validate_destination(
+            self.user_selection,
+            unsafe { libc::geteuid() },
+            self.user_selection.parent().unwrap(),
+        )
+        .map_err(io_error)?;
+        if self.package_mode()? {
+            for spec in self.vendor_files() {
+                if !matches_file(&spec)? {
+                    return Err(io_error(format!(
+                        "package asset is missing or does not match: {}",
+                        spec.path.display()
+                    )));
+                }
+            }
+            // Drop-ins are dynamic user/machine state, never package payloads.
+            // Check the complete write set before authorization or mutation.
+            for spec in self.user_files()?.into_iter().chain(self.system_files()?) {
+                let destination = package_write_destination(&spec.path)?;
+                match self
+                    .package_database
+                    .owner_of(&destination)
+                    .map_err(io_error)?
+                {
+                    PathOwnership::Unowned => {}
+                    ownership => {
+                        return Err(io_error(format!(
+                            "refusing to replace package-owned configuration: {} ({ownership:?})",
+                            spec.path.display()
+                        )))
+                    }
+                }
+            }
+            // Local base units shadow the package's vendor units. Setup cannot
+            // adopt or remove those files on behalf of the package manager.
+            for path in [
+                self.system_root.join("etc/systemd/system/LG_Buddy.service"),
+                self.system_root
+                    .join("etc/systemd/system/LG_Buddy_lifecycle.service"),
+                self.system_root.join("etc/tmpfiles.d/lg_buddy.conf"),
+                self.system_root
+                    .join("etc/NetworkManager/dispatcher.d/pre-down.d/LG_Buddy_lifecycle"),
+                self.system_root
+                    .join("etc/systemd/user/LG_Buddy_screen.service"),
+                self.system_root
+                    .join("etc/systemd/user/LG_Buddy_update_check.service"),
+                self.system_root
+                    .join("etc/systemd/user/LG_Buddy_update_check.timer"),
                 self.user_units.join(SCREEN),
+                self.user_units.join(TIMER),
+                self.user_units.join("LG_Buddy_update_check.service"),
+            ]
+            .into_iter()
+            .chain(
+                LEGACY_HANDLERS
+                    .iter()
+                    .map(|path| self.system_root.join(path)),
+            ) {
+                match fs::symlink_metadata(&path) {
+                    Ok(_) => {
+                        return Err(io_error(format!(
+                            "local file shadows a package asset: {}",
+                            path.display()
+                        )))
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(io_error(error)),
+                }
+            }
+        }
+        Ok(())
+    }
+    fn vendor_files(&self) -> Vec<FileSpec> {
+        let mut files = Vec::new();
+        for (directory, name, contents, mode) in [
+            (
+                "usr/lib/systemd/system",
+                STARTUP,
+                include_str!("../../../../systemd/LG_Buddy.service"),
+                0o644,
+            ),
+            (
+                "usr/lib/systemd/system",
+                LIFECYCLE,
+                include_str!("../../../../systemd/LG_Buddy_lifecycle.service"),
+                0o644,
+            ),
+            (
+                "usr/lib/systemd/user",
+                SCREEN,
                 include_str!("../../../../systemd/LG_Buddy_screen.service"),
                 0o644,
             ),
-            file(
-                self.user_units.join(TIMER),
+            (
+                "usr/lib/systemd/user",
+                TIMER,
                 include_str!("../../../../systemd/LG_Buddy_update_check.timer"),
                 0o644,
             ),
-            file(
-                self.user_units.join("LG_Buddy_update_check.service"),
+            (
+                "usr/lib/systemd/user",
+                "LG_Buddy_update_check.service",
                 include_str!("../../../../systemd/LG_Buddy_update_check.service"),
                 0o644,
             ),
+            (
+                "usr/lib/tmpfiles.d",
+                "lg_buddy.conf",
+                include_str!("../../../../systemd/lg_buddy.conf"),
+                0o644,
+            ),
+            (
+                "usr/lib/NetworkManager/dispatcher.d/pre-down.d",
+                "LG_Buddy_lifecycle",
+                NM_HOOK,
+                0o755,
+            ),
+        ] {
+            let mut spec = file(self.system_root.join(directory).join(name), contents, mode);
+            if self.system_root == Path::new("/") {
+                spec.owner = 0;
+            }
+            files.push(spec);
+        }
+        files
+    }
+    fn user_files(&self) -> Result<Vec<FileSpec>, SettingsError> {
+        let override_contents = self.override_contents()?;
+        let mut files = vec![
             file(
                 self.user_units
                     .join("LG_Buddy_screen.service.d/config.conf"),
@@ -222,22 +365,39 @@ impl<C: ServiceController> ServiceInstallation<'_, C> {
                 override_contents,
                 0o644,
             ),
-        ])
+        ];
+        files.push(file(
+            self.user_selection.to_path_buf(),
+            format!(
+                "{}\n",
+                fs::canonicalize(self.config).map_err(io_error)?.display()
+            ),
+            0o644,
+        ));
+        if !self.package_mode()? {
+            files.extend([
+                file(
+                    self.user_units.join(SCREEN),
+                    include_str!("../../../../systemd/LG_Buddy_screen.service"),
+                    0o644,
+                ),
+                file(
+                    self.user_units.join(TIMER),
+                    include_str!("../../../../systemd/LG_Buddy_update_check.timer"),
+                    0o644,
+                ),
+                file(
+                    self.user_units.join("LG_Buddy_update_check.service"),
+                    include_str!("../../../../systemd/LG_Buddy_update_check.service"),
+                    0o644,
+                ),
+            ]);
+        }
+        Ok(files)
     }
     fn system_files(&self) -> Result<Vec<FileSpec>, SettingsError> {
         let override_contents = self.override_contents()?;
         let mut files = vec![
-            file(
-                self.system_root.join("etc/systemd/system/LG_Buddy.service"),
-                include_str!("../../../../systemd/LG_Buddy.service"),
-                0o644,
-            ),
-            file(
-                self.system_root
-                    .join("etc/systemd/system/LG_Buddy_lifecycle.service"),
-                include_str!("../../../../systemd/LG_Buddy_lifecycle.service"),
-                0o644,
-            ),
             file(
                 self.system_root
                     .join("etc/systemd/system/LG_Buddy.service.d/config.conf"),
@@ -250,26 +410,41 @@ impl<C: ServiceController> ServiceInstallation<'_, C> {
                 override_contents,
                 0o644,
             ),
-            file(
-                self.system_root.join("etc/tmpfiles.d/lg_buddy.conf"),
-                include_str!("../../../../systemd/lg_buddy.conf"),
-                0o644,
-            ),
-            file(
-                self.system_root
-                    .join("etc/NetworkManager/dispatcher.d/pre-down.d/LG_Buddy_lifecycle"),
-                NM_HOOK,
-                0o755,
-            ),
-            file(
-                self.system_root.join("usr/lib/lg-buddy/config-path"),
-                format!(
-                    "{}\n",
-                    fs::canonicalize(self.config).map_err(io_error)?.display()
-                ),
-                0o644,
-            ),
         ];
+        files.push(file(
+            self.system_root.join("etc/lg-buddy/config-path"),
+            format!(
+                "{}\n",
+                fs::canonicalize(self.config).map_err(io_error)?.display()
+            ),
+            0o644,
+        ));
+        if !self.package_mode()? {
+            files.extend([
+                file(
+                    self.system_root.join("etc/systemd/system/LG_Buddy.service"),
+                    include_str!("../../../../systemd/LG_Buddy.service"),
+                    0o644,
+                ),
+                file(
+                    self.system_root
+                        .join("etc/systemd/system/LG_Buddy_lifecycle.service"),
+                    include_str!("../../../../systemd/LG_Buddy_lifecycle.service"),
+                    0o644,
+                ),
+                file(
+                    self.system_root.join("etc/tmpfiles.d/lg_buddy.conf"),
+                    include_str!("../../../../systemd/lg_buddy.conf"),
+                    0o644,
+                ),
+                file(
+                    self.system_root
+                        .join("etc/NetworkManager/dispatcher.d/pre-down.d/LG_Buddy_lifecycle"),
+                    NM_HOOK,
+                    0o755,
+                ),
+            ]);
+        }
         if self.system_root == Path::new("/") {
             for spec in &mut files {
                 spec.owner = 0;
@@ -425,6 +600,7 @@ impl<C: ServiceController> ServiceInstallation<'_, C> {
         cancellation: &StepCancellation,
         mutation: &mut dyn FnMut(),
     ) -> Result<(), SettingsError> {
+        self.verify_package_assets()?;
         let timer = self.desired_timer()?;
         if !self.system_ready()? {
             self.controller.repair_system_services_cancellable(
@@ -450,7 +626,19 @@ impl<C: ServiceController> ServiceInstallation<'_, C> {
             self.controller.stop_user_service(SCREEN)?;
         }
         for spec in files {
-            write_file(&spec)?;
+            if self.package_mode()? {
+                package_write_destination(&spec.path)?;
+            }
+            if spec.path == self.user_selection {
+                crate::config::binding::remember(
+                    &fs::canonicalize(self.config).map_err(io_error)?,
+                    self.user_selection,
+                    true,
+                )
+                .map_err(io_error)?;
+            } else {
+                write_file(&spec)?;
+            }
         }
         // Reload on every incomplete attempt: previous execution may have stopped after writing files.
         self.controller.reload_user_units()?;
@@ -478,6 +666,27 @@ impl<C: ServiceController> ServiceInstallation<'_, C> {
         }
         Ok(())
     }
+}
+
+// An unowned executable keeps the existing mutable setup path. This does not
+// classify an arbitrary installation as an updater-compatible release bundle.
+fn package_mode(
+    ownership: Result<PathOwnership, PackageDatabaseError>,
+) -> Result<bool, SettingsError> {
+    match ownership.map_err(io_error)? {
+        PathOwnership::Owned(_) => Ok(true),
+        PathOwnership::Unowned => Ok(false),
+        PathOwnership::Conflicting(owners) => Err(io_error(format!(
+            "conflicting package ownership: {owners:?}"
+        ))),
+    }
+}
+
+/// Read-only internal entry point used by the privileged service helper. The
+/// helper reobserves ownership itself rather than trusting the frontend's mode.
+pub(super) fn service_setup_ownership(path: &Path) -> Result<&'static str, SettingsError> {
+    package_mode(crate::upgrade_preflight::PackageDatabase::system().owner_of(path))
+        .map(|package| if package { "package" } else { "unowned" })
 }
 
 fn failure(message: &str, diagnostic: impl ToString, recovery: SetupRecovery) -> StepFailure {
@@ -531,6 +740,41 @@ fn io_error(error: impl ToString) -> SettingsError {
         message: error.to_string(),
     }
 }
+// The package database answers for the path it is given, while filesystem
+// writes follow ancestor symlinks. Refuse redirects before querying ownership;
+// absent directories remain valid first-run destinations. Normalize harmless
+// separators/dot components so the query names the actual write destination.
+fn package_write_destination(path: &Path) -> Result<PathBuf, SettingsError> {
+    use std::path::Component;
+    if !path.is_absolute() {
+        return Err(io_error("package configuration path must be absolute"));
+    }
+    let mut destination = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                return Err(io_error(
+                    "package configuration path contains parent traversal",
+                ))
+            }
+            Component::CurDir => continue,
+            _ => destination.push(component.as_os_str()),
+        }
+        match fs::symlink_metadata(&destination) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(io_error(format!(
+                    "refusing a symlink in package configuration path: {}",
+                    destination.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(io_error(error)),
+        }
+    }
+    Ok(destination)
+}
+
 fn matches_file(spec: &FileSpec) -> Result<bool, SettingsError> {
     match fs::symlink_metadata(&spec.path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
