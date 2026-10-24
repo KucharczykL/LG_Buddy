@@ -1,5 +1,10 @@
 # RPM package VM qualification
 
+Current distribution/update policy is documented in
+[distribution-support.md](distribution-support.md). This historical record
+retains its original Fedora 43 environment; it does not qualify the new Fedora
+44 automatic-update baseline.
+
 Recorded 2026-10-24 for [#135](https://github.com/Staphylococcus/LG_Buddy/issues/135).
 This supplements the [isolated RPM tests](rpm-package.md#lifecycle-checks) with
 real Fedora desktop, package, service-manager and administrator authorization

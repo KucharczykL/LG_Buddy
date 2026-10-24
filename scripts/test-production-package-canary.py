@@ -21,6 +21,19 @@ from release_promotion import SemVer
 REPOSITORY = 'Staphylococcus/LG_Buddy'
 SCRIPTS = Path(__file__).resolve().parent
 
+# These immutable published helpers predate the stored-repository fix. Do not
+# turn arbitrary automatic-update failures into manual-transition successes.
+LEGACY_RPM_HELPERS = {
+    'v2.0.0-beta.3': '62cd1efc5cd4c095688cf9b376c0602bdbbe60e1',
+    'v2.0.0-beta.4': '60f4d65b460e37a1a4120a0d665e48cbd8f26e55',
+}
+
+
+def manual_rpm_transition(family: str, tag: str, commit: str, target_version: str) -> bool:
+    target = SemVer.parse(target_version)
+    return (family == 'rpm' and LEGACY_RPM_HELPERS.get(tag) == commit
+            and bool(target.prerelease) and target > SemVer.parse('2.0.0-beta.4'))
+
 
 def checked(*arguments: str, env=None) -> str:
     try:
@@ -197,7 +210,19 @@ def main():
         before = snapshot(retained)
         environment = {name: value for name, value in os.environ.items()
                        if name not in ('GH_TOKEN', 'GITHUB_TOKEN') and not name.startswith('LG_BUDDY_')}
-        if baseline:
+        manual_transition = bool(baseline) and manual_rpm_transition(
+            args.format, identity.release_tag, identity.commit, expected.version)
+        record['automatic_upgrade_qualified'] = False
+        if manual_transition:
+            target_identity, target_package = download_release(candidate, work / 'manual-target', args.format)
+            assert target_identity == expected
+            output = checked('dnf5', '--assumeyes', '--setopt=install_weak_deps=False',
+                             '--setopt=tsflags=', 'install', str(target_package))
+            (work / 'manual-rpm-transition.output').write_text(output + '\n')
+            record['journey'] = 'manual-rpm-transition'
+            record['unqualified'] = ('The immutable beta.3/beta.4 helper cannot replay newer DNF plans; '
+                                     'this verifies the documented manual RPM transition, not an automatic upgrade')
+        elif baseline:
             os.chown(work, user.pw_uid, user.pw_gid)
             output = work / 'native-update.output'
             checked('runuser', '-u', username, '--', 'dbus-run-session', '--', 'xvfb-run', '-a',
@@ -207,6 +232,7 @@ def main():
             assert f'Current: {identity.version} ({identity.channel}, commit {identity.commit})' in text, text
             assert f'Target: {expected.version} ({expected.channel}, commit {expected.commit})' in text, text
             record['journey'] = 'prerelease-to-' + ('stable' if expected.channel == 'stable' else 'prerelease')
+            record['automatic_upgrade_qualified'] = True
         else:
             # The first native release has no authentic older package to update.
             # Qualify its public installation, and record the missing journey.
@@ -227,7 +253,7 @@ def main():
                                       repository=REPOSITORY, tag=args.expected_tag,
                                       target=expected.target, packages=True)
         (work / 'github-responses.json').write_text(json.dumps(observation, indent=2) + '\n')
-        record['outcome'] = 'passed' if baseline else 'bootstrap'
+        record['outcome'] = 'manual-transition' if manual_transition else ('passed' if baseline else 'bootstrap')
     finally:
         sudoers.unlink(missing_ok=True)
         (work / 'result.json').write_text(json.dumps(record, indent=2) + '\n')

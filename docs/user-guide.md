@@ -380,10 +380,13 @@ The installation dialog closes on failure, and **Install update…** offers
 another attempt. If installation succeeded but restarting failed, the row
 identifies the required restart and its action retries restarting only.
 
-This flow supports compatible release bundles and healthy LG Buddy Debian
-packages. The Debian path uses APT and requires a verified `.deb` on the selected
-release; package publication remains under development. Other package owners
-use their package source. Graphical authorization
+This flow supports compatible release bundles and healthy LG Buddy Debian/RPM
+packages. Debian packages use APT; Fedora 44+ RPM installations use DNF5. A
+matching verified package must exist on the selected release. Fedora 43 users
+receive [manual-update guidance](distribution-support.md#fedora-43-update-an-existing-rpm-installation)
+before downloads or authorization. Other package owners use their package
+source. See the [distribution support matrix](distribution-support.md) for the
+complete policy. Graphical authorization
 requires `pkexec` and a desktop authorization agent.
 
 ### Headless update commands

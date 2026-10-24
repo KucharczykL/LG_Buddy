@@ -1,5 +1,10 @@
 # Native release implementation validation
 
+Current distribution/update policy is documented in
+[distribution-support.md](distribution-support.md). This historical record
+retains its original Fedora 43 environment; it does not qualify the new Fedora
+44 automatic-update baseline.
+
 Recorded 2026-10-24 for [#136](https://github.com/Staphylococcus/LG_Buddy/issues/136).
 This is local validation of the publication and canary implementation. No v2
 tag, draft, release or public package was created for these checks.

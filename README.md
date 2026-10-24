@@ -55,6 +55,17 @@ Automatic monitoring uses the available native GNOME and Wayland sources.
 LG Buddy does not launch or require swayidle. If the TV does not blank or restore as expected, follow
 the [screen behavior and troubleshooting guide](docs/user-guide.md#automatic-screen-blanking).
 
+## Distribution Support
+
+The current x86_64 baselines are **Ubuntu 24.04 LTS**, **Fedora 44+** and
+**current Arch Linux**. Ubuntu uses `.deb`/APT, Fedora uses `.rpm`/DNF5, and
+Arch uses the release bundle. Other distributions and package-owned installs
+have different compatibility and update limits.
+
+See the [distribution support matrix](docs/distribution-support.md) for tested
+coverage, desktop requirements, derivatives, immutable hosts and
+[Fedora 43 manual-update instructions](docs/distribution-support.md#fedora-43-update-an-existing-rpm-installation).
+
 ## Before You Install
 
 LG Buddy manages one TV. Connect it to the same network as your PC and enable

@@ -1,7 +1,8 @@
 # DNF stored replay validation
 
 Recorded 2026-10-24 for [#334](https://github.com/Staphylococcus/LG_Buddy/issues/334).
-These are disposable native integration results; published-release and real
+This records the upstream-fix slice at `1ddd6f9`, before the platform policy
+change below. These are disposable native integration results; published-release and real
 desktop qualification remain separate under #136.
 
 ## Upstream fix and application changes
@@ -31,7 +32,7 @@ GitHub release/digest verification boundary.
 | --- | --- | --- |
 | Fedora 44; DNF/libdnf5 `5.4.3.0-2.fc44` | Standalone store/replay of absent `libglvnd-gles` | Passed with prefixed repository IDs; DNF's signature-skipping warning motivated the helper check above. |
 | Same Fedora 44 | Application updater adds absent `libglvnd-gles-1:1.7.0-9.fc44.x86_64` | Passed; dependency payload verified, exact app identity/ownership checked, saved data retained and installed GUI relaunched as the normal user. |
-| Fedora 43; DNF/libdnf5 `5.2.18.0-5.fc43` | Application update with dependencies already installed | Passed; legacy plan format remains supported. |
+| Fedora 43; DNF/libdnf5 `5.2.18.0-5.fc43` | Application update with dependencies already installed | Passed before the Fedora 44+ policy; current automatic RPM updates on 43 are refused. |
 | Same Fedora 43 | Original standalone dependency-changing store/replay | Failed with mirror 404s despite the stored RPM being present. |
 | Same Fedora 43 | Disposable plan with upstream-equivalent repository prefixes, after strict `rpmkeys` verification | Passed for `libglvnd-gles-1:1.7.0-8.fc43.x86_64`; assessment only, not an implemented application workaround. |
 
@@ -55,18 +56,43 @@ no VM was started.
 
 ## Fedora 43 decision and remaining qualification
 
-Fedora 43's tested stock DNF still needs a compatibility path or a distro
-backport for dependency-changing automatic updates. The isolated prefix probe
-supports investigating a small adaptation matching upstream's serializer.
-Before shipping it, bind the transformation to an already validated plan,
-preserve the signature gate and all transaction checks, and exercise the full
-application handoff and relevant desktop qualification. This slice does not
-transform plans or raise the Fedora/DNF minimum version.
+The user selected **Fedora 44+ as the automatic RPM update baseline** rather
+than shipping the Fedora 43 compatibility rewrite. Current GUI/CLI preparation
+and the root helper refuse unsupported RPM platforms with manual-update
+instructions. Fedora 43 refusal is now a required CI check. See the
+[distribution support policy](distribution-support.md) for all distro baselines,
+Fedora 43 instructions and the one-time manual transition for early v2 betas.
+
+The successful isolated Fedora 43 prefix probe above remains historical
+assessment evidence. It does not establish a shipped workaround or current
+Fedora 43 automatic-update support. Historical desktop/public beta results are
+preserved under their original distribution versions.
 
 The new Fedora 44 CI job requires a genuinely absent repository dependency and
 exercises the signature gate using native RPM tools. CI execution and public
 qualification of a release containing these changes remain outstanding;
 #334 remains open.
+
+The subsequent platform-policy slice passed the full runtime suite (1,579
+library tests, all integration tests and 155 behavior scenarios; one existing
+library test ignored). Its Fedora 44 native handoff added the absent GLES
+dependency and retained user state. Fedora 43 CLI and root-helper checks
+refused with manual-update guidance, with no release HTTP requests, mutation
+marker or package/user-state changes. Fedora 44 package builds were byte
+identical on repetition, and its package contract and lifecycle/startup checks
+passed. Workflow lint and canary/release contract tests passed locally.
+
+An authentic public beta.3 RPM on Fedora 44, given the authentic public beta.4
+RPM, reproduced `DNF did not select the verified LG Buddy upgrade` before the
+mutation marker and retained beta.3. This corroborates the early-beta manual
+transition documented in the support guide. The controlled transition is
+limited to the known immutable beta.3/beta.4 identities and a newer prerelease;
+it cannot qualify a stable release or hide failures from a newer baseline.
+No new public helper release, Fedora 44 desktop VM or public automatic-upgrade
+journey was created by these checks.
+
+Platform-policy receipts and logs are retained separately under
+`~/.local/state/lg-buddy-validation/issue334-distro-policy-20261024/`.
 
 Raw logs, original/prefixed transaction JSON, tool versions and helper test
 artifacts are retained locally under

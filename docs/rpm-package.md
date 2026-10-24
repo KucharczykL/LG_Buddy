@@ -2,7 +2,7 @@
 
 The local builder produces an `x86_64` RPM from the verified release bundle,
 following the [package ownership contract](package-ownership.md). Its baseline
-is Fedora 43. Package assembly, lifecycle checks and DNF updater integration
+is Fedora 44. Package assembly, lifecycle checks and DNF updater integration
 implement [#135](https://github.com/Staphylococcus/LG_Buddy/issues/135).
 Real Fedora desktop qualification is recorded in
 [rpm-vm-validation.md](rpm-vm-validation.md). Public package assets and
@@ -11,7 +11,7 @@ production canaries belong to
 
 ## Build
 
-Build on Fedora 43 with `python3` and `rpm-build`. The shared Debian/RPM payload
+Build on Fedora 44 with `python3` and `rpm-build`. The shared Debian/RPM payload
 validator checks the release manifest and both embedded binary identities,
 rejects unsafe archive members, and stages only vendor files. It never executes
 archive scripts or the bundle installer.
@@ -111,15 +111,19 @@ the system's trusted RPM keyring, before reporting mutation or replaying.
 Missing trusted keys refuse the update; administrators must establish that
 repository's trust through their normal DNF workflow before retrying.
 
-Known Fedora 43 limitation: DNF 5.2.18 can fail replay when an update adds a
-repository dependency, even with its RPM already stored. This also reproduces
-with plain DNF and is tracked in [#334](https://github.com/Staphylococcus/LG_Buddy/issues/334),
-a stable-readiness blocker under [#136](https://github.com/Staphylococcus/LG_Buddy/issues/136).
-The current version-only beta-to-beta qualification retains the baseline's
-runtime dependency set and is reported separately.
-The [upstream-fix validation record](dnf-replay-validation.md) covers newer
-DNF and the separate Fedora 43 compatibility assessment; this slice does not
-rewrite older DNF plans or change the supported Fedora baseline.
+Automatic RPM updates require **Fedora 44 or newer**, using the distribution's
+DNF5. The GUI/CLI stop before release acquisition or authorization on an
+unsupported host; the root helper independently enforces the same boundary.
+Other RPM distributions are not admitted through `ID_LIKE`. Fedora 43 users
+can continue with [verified manual RPM updates](distribution-support.md#fedora-43-update-an-existing-rpm-installation)
+or upgrade Fedora. Existing settings, pairing and installed application use
+are unaffected by this automatic-update policy.
+
+The [distribution support policy](distribution-support.md) covers all supported
+baselines and delivery paths. The [DNF replay record](dnf-replay-validation.md)
+preserves the Fedora 43 failure and the Fedora 44 upstream-fix validation under
+[#334](https://github.com/Staphylococcus/LG_Buddy/issues/334). The Fedora 43
+prefix probe remains assessment evidence; no compatibility rewrite is shipped.
 
 Afterward the updater verifies the exact RPM database version, ownership and
 both installed binary identities before relaunching GTK as the invoking user.
@@ -129,7 +133,7 @@ is installed or inferred from the update channel.
 ## Lifecycle checks
 
 CI builds the native package twice and runs the real DNF/RPM lifecycle in a
-disposable Fedora 43 container. The lifecycle deliberately requires root,
+disposable Fedora 44 container. The lifecycle deliberately requires root,
 Docker and `LG_BUDDY_DISPOSABLE_PACKAGE_TEST=1`:
 
 ```bash
@@ -165,3 +169,8 @@ the helper's stored-RPM verification with a genuine signed dependency, an
 unsigned RPM, a tampered RPM and a symlink. The required smoke aggregate
 includes this job. Pass `--expect-new-rpm-dependency libglvnd-gles` to the
 native updater smoke to require the same dependency-changing journey locally.
+
+A Fedora 43 refusal job checks the supported-platform boundary through the
+normal CLI and root helper: it requires actionable guidance, zero release HTTP
+requests, no mutation marker and unchanged package/user state. Its presence in
+CI tests refusal rather than Fedora 43 automatic-update support.

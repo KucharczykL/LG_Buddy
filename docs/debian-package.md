@@ -10,6 +10,9 @@ product source. Published package assets remain
 [#136](https://github.com/Staphylococcus/LG_Buddy/issues/136); the adapter requires
 a matching verified `.deb` on the selected release.
 
+See the [distribution support policy](distribution-support.md) for other
+Debian-family systems and the limits of this Ubuntu qualification.
+
 ## Build
 
 Build on Ubuntu 24.04 with `python3`, `dpkg-dev`, `libgtk-4-1` and

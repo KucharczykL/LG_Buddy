@@ -141,7 +141,7 @@ The [Debian package development guide](debian-package.md) covers the local
 package builder, APT updater and isolated lifecycle checks. The
 [Ubuntu VM qualification](debian-vm-validation.md) records real desktop,
 service-manager, polkit and reboot coverage separately under #134.
-The [RPM package development guide](rpm-package.md) covers the Fedora 43
+The [RPM package development guide](rpm-package.md) covers the Fedora 44
 package builder and isolated native lifecycle checks under #135.
 
 `install.sh` is installer-only. It does not build the runtime or GUI.
@@ -361,7 +361,7 @@ python3 scripts/test_publish_release_assets.py
 ```
 
 After building both native packages from the same release bundle on their
-supported baselines, generate and verify the complete asset set on Fedora 43
+supported baselines, generate and verify the complete asset set on Fedora 44
 with `dpkg`, `rpm` and Python installed. Supply the exact binary source commit
 and a supported release version; the helper refuses mismatched identities.
 The publisher dry run performs these checks without writing to GitHub:

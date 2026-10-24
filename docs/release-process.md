@@ -61,7 +61,7 @@ There is no separate version input.
 5. The resulting push starts the serialized release workflow, which builds and
    smoke-tests the merged release commit without write credentials, including
    an archive-driven upgrade from the pinned public baseline. Ubuntu 24.04 and
-   Fedora 43 build the Debian and RPM packages from that same verified bundle.
+   Fedora 44 build the Debian and RPM packages from that same verified bundle.
    Both run the real package lifecycle/startup smoke on those release bytes;
    revision 2 is a private upgrade fixture and is not published. Assembly
    verifies every format's metadata and embedded binary identities
@@ -161,7 +161,7 @@ It rejects missing/unexpected assets and incomplete, duplicate or mismatched
 checksums. Non-installing native tools inspect package metadata and payloads;
 both executables and each package manifest must match the bundle's exact
 version, channel, target and commit. Verification never executes package
-scriptlets or candidate binaries. Fedora 43 provides RPM 6 decoding and Debian
+scriptlets or candidate binaries. Fedora 44 provides RPM 6 decoding and Debian
 decoding for assembly, draft staging and publication.
 
 Draft resumption uploads only missing expected assets. Existing assets must
@@ -177,7 +177,7 @@ download responses; its default still supports historical bundle-only releases.
 
 ## Public package and legacy canaries
 
-`production-native-canary` runs on Ubuntu 24.04 and Fedora 43 after both stable
+`production-native-canary` runs on Ubuntu 24.04 and Fedora 44 after both stable
 and prerelease publication. It selects an actual older published prerelease
 with the complete native asset set as test input. The installed application
 owns target discovery, confirmation, download, root revalidation and APT/DNF
@@ -253,7 +253,7 @@ Smoke validation checks the manifest before executing installer code and then
 compares it with both the bundled and installed binary. Publishing validates
 the manifest directly from each archive without extracting or executing archive
 content. CI builds on Ubuntu 24.04, establishing GTK 4.14, libadwaita 1.5, and
-a maximum GLIBC 2.39 symbol baseline. Fedora 43 and current Arch lanes install
+a maximum GLIBC 2.39 symbol baseline. Fedora 44 and current Arch lanes install
 and launch the same artifact under Xvfb, drive it without a pointer, inspect its
 AT-SPI tree, and compare its light/dark and 1x/2x rendering; Ubuntu remains the
 ABI baseline.
@@ -367,3 +367,16 @@ binary paths explicitly:
   --runtime-binary ./target/x86_64-unknown-linux-musl/release/lg-buddy \
   --gui-binary ./target/x86_64-unknown-linux-gnu/release/lg-buddy-gui
 ```
+
+### Fedora automatic-update baseline transition
+
+Fedora 44+ is the RPM automatic-update baseline; see the
+[distribution support policy](distribution-support.md). The known immutable
+beta.3/beta.4 helpers cannot replay newer DNF plans. For a later prerelease with those exact baseline
+tags **and commits**, the public canary verifies a checksum-verified manual RPM
+upgrade and records `manual-transition`, `automatic_upgrade_qualified=false`
+and the unqualified automatic journey. It never converts arbitrary update
+failures or stable-release qualification to this outcome. Once an eligible
+newer baseline exists, the normal
+automatic journey is required. Preserve these distinctions in release review;
+a manual transition does not satisfy published automatic-update qualification.

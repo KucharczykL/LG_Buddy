@@ -203,7 +203,7 @@ jobs:
           - format: debian
             image: ubuntu:24.04
           - format: rpm
-            image: fedora:43
+            image: fedora:44
     container: ${{ matrix.image }}
     steps:
       - name: Install native build tools
@@ -257,7 +257,7 @@ jobs:
   assemble-release-assets:
     if: needs.validate.outputs.prepare == 'true'
     runs-on: ubuntu-24.04
-    container: fedora:43
+    container: fedora:44
     needs: [validate, build-release-bundle, build-native-packages]
     steps:
       - name: Install non-installing package decoders
@@ -296,7 +296,7 @@ jobs:
     name: stage-release-draft
     if: needs.validate.outputs.prepare == 'true'
     runs-on: ubuntu-latest
-    container: fedora:43
+    container: fedora:44
     environment: release-promotion
     needs:
       - validate
@@ -419,7 +419,7 @@ jobs:
     name: publish-reviewed-release
     if: needs.validate.outputs.prepare == 'true'
     runs-on: ubuntu-latest
-    container: fedora:43
+    container: fedora:44
     environment: release-publication
     permissions:
       actions: read
@@ -544,7 +544,7 @@ jobs:
           - format: debian
             image: ubuntu:24.04
           - format: rpm
-            image: fedora:43
+            image: fedora:44
     container: ${{ matrix.image }}
     steps:
       - name: Install public canary prerequisites

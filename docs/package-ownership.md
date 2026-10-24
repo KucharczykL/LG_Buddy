@@ -322,11 +322,13 @@ display.
 | Delivery / qualification baseline | Required GUI packages |
 | --- | --- |
 | Debian family: Ubuntu 24.04 (#134) | `libgtk-4-1` >= 4.14, `libadwaita-1-0` >= 1.5 |
-| RPM family: Fedora 43 (#135) | `gtk4` >= 4.14, `libadwaita` >= 1.5 |
-| Release bundle: Ubuntu 24.04, Fedora 43, Arch current | Same minimums; Arch package names are `gtk4`, `libadwaita` |
+| RPM family: Fedora 44 (current baseline) | `gtk4` >= 4.14, `libadwaita` >= 1.5 |
+| Release bundle: Ubuntu 24.04, Fedora 44, Arch current | Same minimums; Arch package names are `gtk4`, `libadwaita` |
 
-Package format/family is not a claim that every Debian/RPM distribution is
-supported. New baselines require dependency and launch/linkage qualification.
+See the [distribution support policy](distribution-support.md) for supported
+delivery/update paths and Fedora 43 manual-update guidance. Automatic RPM
+updates require Fedora 44 or newer. Package format/family is not a claim that
+every Debian/RPM distribution is supported. New baselines require dependency and launch/linkage qualification.
 Recipes must declare the actual runtime library requirements of both payloads,
 including generated ELF dependencies and these explicit GUI minimums. Build
 and test dependencies are separate. Python, bscpylgtv, Zenity and swayidle are

@@ -98,6 +98,7 @@ def main() -> None:
     parser.add_argument("--runtime-fixture", type=Path)
     parser.add_argument("--gui-fixture", type=Path)
     parser.add_argument("--expect-new-rpm-dependency", help="require this repository dependency to be absent before, and installed after, the update")
+    parser.add_argument("--expect-unsupported-rpm-platform", action="store_true")
     parser.add_argument("--drive", choices=("yes", "no"))
     parser.add_argument("--version", default="")
     parser.add_argument("--drive-output", type=Path)
@@ -193,6 +194,21 @@ cp {root}/usr/bin/* %{{buildroot}}/usr/bin/
             thread.start()
             environment = {**os.environ, "LG_BUDDY_TEST_GITHUB_ADDRESS": f"127.0.0.1:{server.server_address[1]}"}
             try:
+                if args.expect_unsupported_rpm_platform:
+                    assert rpm
+                    refused = subprocess.run(["runuser", "-u", username, "--", "/usr/bin/lg-buddy", "updates", "install"],
+                                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, timeout=30)
+                    assert refused.returncode != 0 and b"Fedora 44 or newer" in refused.stderr, (refused.stdout, refused.stderr)
+                    assert b"install it manually with DNF" in refused.stderr
+                    with args.package.open("rb") as stream:
+                        root_refused = subprocess.run(["/usr/bin/lg-buddy", protocol, str(facts["tag"]), str(facts["commit"])],
+                                                     stdin=stream, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, timeout=30)
+                    assert root_refused.returncode != 0 and b"Fedora 44 or newer" in root_refused.stderr, (root_refused.stdout, root_refused.stderr)
+                    assert b"mutation_started" not in root_refused.stdout
+                    assert not requests.exists(), "unsupported platform reached release HTTP transport"
+                    assert installed_version() == "0.0.0-1" and snapshot(retained) == before
+                    print("Fedora 43 automatic RPM update refusal passed: actionable CLI/root guidance, no release HTTP requests or mutation, retained data.")
+                    return
                 # Supplying bytes is insufficient authority: the root helper
                 # must independently verify the published digest before APT.
                 corrupt = work / "corrupt.deb"

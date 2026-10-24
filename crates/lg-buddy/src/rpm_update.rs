@@ -15,6 +15,51 @@ use crate::upgrade_preflight::{OsFilesystemFacts, PackageDatabase, PackageFamily
 use semver::Version;
 use serde::Deserialize;
 
+pub(crate) const PLATFORM_GUIDANCE: &str = "Automatic RPM updates require Fedora 44 or newer. Upgrade Fedora, or download the matching RPM and sha256sums.txt from the same LG Buddy release, verify the RPM checksum, and install it manually with DNF. See the distribution support guide for Fedora 43 instructions.";
+
+fn supported_platform(os_release: &str) -> bool {
+    let mut id = None;
+    let mut version = None;
+    for line in os_release.lines() {
+        let Some((key, value)) = line.trim().split_once('=') else {
+            continue;
+        };
+        let value = value.trim();
+        let value = value
+            .strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+            .or_else(|| value.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+            .unwrap_or(value);
+        match key {
+            "ID" => id = Some(value),
+            "VERSION_ID" => version = Some(value),
+            _ => {}
+        }
+    }
+    id == Some("fedora")
+        && version.is_some_and(|v| {
+            !v.is_empty()
+                && v.bytes().all(|b| b.is_ascii_digit())
+                && v.parse::<u32>().is_ok_and(|v| v >= 44)
+        })
+}
+
+pub(crate) fn automatic_update_preflight() -> Result<(), String> {
+    let file = match File::open("/etc/os-release") {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => File::open("/usr/lib/os-release"),
+        result => result,
+    }
+    .map_err(|_| PLATFORM_GUIDANCE.to_string())?;
+    let mut contents = String::new();
+    file.take(16 * 1024 + 1)
+        .read_to_string(&mut contents)
+        .map_err(|_| PLATFORM_GUIDANCE.to_string())?;
+    if contents.len() > 16 * 1024 || !supported_platform(&contents) {
+        return Err(PLATFORM_GUIDANCE.into());
+    }
+    Ok(())
+}
+
 pub(crate) fn installed_version() -> Result<String, String> {
     verify_native_paths(&OsFilesystemFacts)?;
     for path in ["/usr/bin/lg-buddy", "/usr/bin/lg-buddy-gui"] {
@@ -73,6 +118,7 @@ fn parse_native_version(text: &str) -> Result<(Version, u64), String> {
 }
 
 pub(crate) fn candidate_preflight(expected: &ReleaseIdentity) -> Result<(), String> {
+    automatic_update_preflight()?;
     let current = installed_version()?;
     let target = rpm::native_version(expected.version()).map_err(|e| e.to_string())?;
     if parse_native_version(&current)? >= parse_native_version(&target)? {
@@ -374,6 +420,31 @@ pub fn run(arguments: &[String]) -> Result<(), String> {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn automatic_updates_require_fedora_44_or_newer() {
+        for text in [
+            "ID=fedora\nVERSION_ID=44\n",
+            "ID=\"fedora\"\nVERSION_ID=\"45\"\n",
+            "# Fedora\nID='fedora'\nVERSION_ID='44'\n",
+        ] {
+            assert!(supported_platform(text), "{text}");
+        }
+        for text in [
+            "ID=fedora\nVERSION_ID=43\n",
+            "ID=rhel\nVERSION_ID=44\nID_LIKE=fedora\n",
+            "ID=debian\nVERSION_ID=44\n",
+            "ID=fedora\nVERSION_ID=rawhide\n",
+            "ID=fedora\nVERSION_ID=44.0\n",
+            "ID=fedora\nVERSION_ID=\"44\n",
+            "ID=fedora\nVERSION_ID=+44\n",
+            "ID=fedora\n",
+            "VERSION_ID=44\n",
+            "",
+            "ID=fedora\nVERSION_ID=44\nVERSION_ID=43\n",
+        ] {
+            assert!(!supported_platform(text), "{text}");
+        }
+    }
     fn plan() -> serde_json::Value {
         json!({"version":"1.0","rpms":[
             {"nevra":"lg-buddy-2.0.0-1.x86_64","action":"Upgrade","reason":"User","repo_id":"@commandline","package_path":"./packages/lg-buddy-2.0.0-1.x86_64.rpm"},
