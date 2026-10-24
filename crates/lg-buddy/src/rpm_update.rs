@@ -15,6 +15,51 @@ use crate::upgrade_preflight::{OsFilesystemFacts, PackageDatabase, PackageFamily
 use semver::Version;
 use serde::Deserialize;
 
+pub(crate) const PLATFORM_GUIDANCE: &str = "Automatic RPM updates require Fedora 44 or newer. Upgrade Fedora, or download the matching RPM and sha256sums.txt from the same LG Buddy release, verify the RPM checksum, and install it manually with DNF. See the distribution support guide for Fedora 43 instructions.";
+
+fn supported_platform(os_release: &str) -> bool {
+    let mut id = None;
+    let mut version = None;
+    for line in os_release.lines() {
+        let Some((key, value)) = line.trim().split_once('=') else {
+            continue;
+        };
+        let value = value.trim();
+        let value = value
+            .strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+            .or_else(|| value.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+            .unwrap_or(value);
+        match key {
+            "ID" => id = Some(value),
+            "VERSION_ID" => version = Some(value),
+            _ => {}
+        }
+    }
+    id == Some("fedora")
+        && version.is_some_and(|v| {
+            !v.is_empty()
+                && v.bytes().all(|b| b.is_ascii_digit())
+                && v.parse::<u32>().is_ok_and(|v| v >= 44)
+        })
+}
+
+pub(crate) fn automatic_update_preflight() -> Result<(), String> {
+    let file = match File::open("/etc/os-release") {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => File::open("/usr/lib/os-release"),
+        result => result,
+    }
+    .map_err(|_| PLATFORM_GUIDANCE.to_string())?;
+    let mut contents = String::new();
+    file.take(16 * 1024 + 1)
+        .read_to_string(&mut contents)
+        .map_err(|_| PLATFORM_GUIDANCE.to_string())?;
+    if contents.len() > 16 * 1024 || !supported_platform(&contents) {
+        return Err(PLATFORM_GUIDANCE.into());
+    }
+    Ok(())
+}
+
 pub(crate) fn installed_version() -> Result<String, String> {
     verify_native_paths(&OsFilesystemFacts)?;
     for path in ["/usr/bin/lg-buddy", "/usr/bin/lg-buddy-gui"] {
@@ -28,7 +73,12 @@ pub(crate) fn installed_version() -> Result<String, String> {
             }
         }
     }
-    for path in ["/usr/bin/dnf5", "/usr/bin/rpm", "/usr/bin/rpm2archive"] {
+    for path in [
+        "/usr/bin/dnf5",
+        "/usr/bin/rpm",
+        "/usr/bin/rpmkeys",
+        "/usr/bin/rpm2archive",
+    ] {
         if !Path::new(path).is_file() {
             return Err(format!("Native update tool unavailable: {path}"));
         }
@@ -68,6 +118,7 @@ fn parse_native_version(text: &str) -> Result<(Version, u64), String> {
 }
 
 pub(crate) fn candidate_preflight(expected: &ReleaseIdentity) -> Result<(), String> {
+    automatic_update_preflight()?;
     let current = installed_version()?;
     let target = rpm::native_version(expected.version()).map_err(|e| e.to_string())?;
     if parse_native_version(&current)? >= parse_native_version(&target)? {
@@ -123,6 +174,49 @@ fn replay_command(transaction: &Path) -> Command {
     command
 }
 
+fn signature_command(package: &Path) -> Command {
+    let mut command = native_command("/usr/bin/rpmkeys");
+    // Stored repositories are COMMANDLINE repositories in newer DNF, where
+    // repository gpgcheck does not apply. Require both signatures and digests
+    // against the system keyring before replay, even if RPM defaults allow
+    // unsigned packages. Only our independently verified LG Buddy RPM is exempt.
+    command
+        .args([
+            "--checksig",
+            "--define",
+            "_pkgverify_level all",
+            "--define",
+            "_pkgverify_flags 0x0",
+        ])
+        .arg(package);
+    command
+}
+
+struct VerifiedPlan {
+    local_package: String,
+    repository_packages: Vec<String>,
+}
+
+fn source_repository(repo_id: &str) -> Result<&str, String> {
+    // DNF >= 5.3 wraps stored repository IDs to avoid collisions with live
+    // repositories. Accept exactly one wrapper, including for @commandline.
+    let source = if let Some(inner) = repo_id.strip_prefix("@stored_transaction(") {
+        inner
+            .strip_suffix(')')
+            .ok_or("Malformed stored DNF repository")?
+    } else {
+        repo_id
+    };
+    if source.is_empty()
+        || source.contains('(')
+        || source.contains(')')
+        || source.starts_with("@stored_transaction")
+    {
+        return Err("Malformed stored DNF repository".into());
+    }
+    Ok(source)
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Plan {
@@ -152,7 +246,7 @@ fn verify_plan(
     current: &str,
     target: &str,
     asset_name: &str,
-) -> Result<String, String> {
+) -> Result<VerifiedPlan, String> {
     if bytes.len() > 2 * 1024 * 1024 {
         return Err("DNF plan is too large".into());
     }
@@ -168,6 +262,7 @@ fn verify_plan(
     let mut replaced = std::collections::HashSet::new();
     let mut seen = std::collections::HashSet::new();
     let mut found = false;
+    let mut repository_packages = Vec::new();
     for package in &plan.rpms {
         let key = name_arch(&package.nevra).ok_or("Malformed DNF package identity")?;
         if !seen.insert(package.nevra.as_str())
@@ -178,6 +273,7 @@ fn verify_plan(
         }
         match package.action.as_str() {
             "Install" | "Upgrade" => {
+                let repository = source_repository(&package.repo_id)?;
                 let path = package
                     .package_path
                     .as_deref()
@@ -194,15 +290,18 @@ fn verify_plan(
                 if key.0 == "lg-buddy" {
                     if package.nevra != wanted
                         || package.action != "Upgrade"
-                        || package.repo_id != "@commandline"
+                        || repository != "@commandline"
                         || package.package_path.as_deref() != Some(local.as_str())
                         || found
                     {
                         return Err("DNF did not select the verified LG Buddy upgrade".into());
                     }
                     found = true;
-                } else if package.repo_id == "@commandline" {
-                    return Err("Unexpected command-line dependency in DNF plan".into());
+                } else {
+                    if repository == "@commandline" || repository == "@System" {
+                        return Err("Unexpected non-repository dependency in DNF plan".into());
+                    }
+                    repository_packages.push(package.package_path.clone().unwrap());
                 }
             }
             "Replaced" => {
@@ -225,7 +324,26 @@ fn verify_plan(
     if !found || !replaced.contains(&("lg-buddy", "x86_64")) || upgraded != replaced {
         return Err("DNF transaction changes package ownership or omitted the upgrade (check version locks)".into());
     }
-    Ok(local)
+    Ok(VerifiedPlan {
+        local_package: local,
+        repository_packages,
+    })
+}
+
+fn verify_repository_packages(transaction: &Path, plan: &VerifiedPlan) -> Result<(), String> {
+    for relative in &plan.repository_packages {
+        let path = transaction.join(relative);
+        if !fs::symlink_metadata(&path)
+            .map_err(|e| e.to_string())?
+            .is_file()
+        {
+            return Err("Expected a regular stored repository RPM".into());
+        }
+        capture(signature_command(&path)).map_err(|e| {
+            format!("Repository RPM signature/digest verification failed before DNF replay; check the system's trusted RPM keys: {e}")
+        })?;
+    }
+    Ok(())
 }
 
 pub fn run(arguments: &[String]) -> Result<(), String> {
@@ -279,10 +397,11 @@ pub fn run(arguments: &[String]) -> Result<(), String> {
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or("Invalid verified RPM filename")?;
-    let relative = verify_plan(&plan, &current, &target, asset_name)?;
+    let plan = verify_plan(&plan, &current, &target, asset_name)?;
+    verify_repository_packages(&transaction, &plan)?;
     // DNF --store does not copy @commandline RPMs. Populate only the checked
     // name from the independently verified, root-private receipt.
-    let destination = transaction.join(relative);
+    let destination = transaction.join(&plan.local_package);
     fs::create_dir_all(destination.parent().unwrap()).map_err(|e| e.to_string())?;
     fs::copy(&package.path, &destination).map_err(|e| e.to_string())?;
     candidate_preflight(&expected)?;
@@ -301,6 +420,31 @@ pub fn run(arguments: &[String]) -> Result<(), String> {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn automatic_updates_require_fedora_44_or_newer() {
+        for text in [
+            "ID=fedora\nVERSION_ID=44\n",
+            "ID=\"fedora\"\nVERSION_ID=\"45\"\n",
+            "# Fedora\nID='fedora'\nVERSION_ID='44'\n",
+        ] {
+            assert!(supported_platform(text), "{text}");
+        }
+        for text in [
+            "ID=fedora\nVERSION_ID=43\n",
+            "ID=rhel\nVERSION_ID=44\nID_LIKE=fedora\n",
+            "ID=debian\nVERSION_ID=44\n",
+            "ID=fedora\nVERSION_ID=rawhide\n",
+            "ID=fedora\nVERSION_ID=44.0\n",
+            "ID=fedora\nVERSION_ID=\"44\n",
+            "ID=fedora\nVERSION_ID=+44\n",
+            "ID=fedora\n",
+            "VERSION_ID=44\n",
+            "",
+            "ID=fedora\nVERSION_ID=44\nVERSION_ID=43\n",
+        ] {
+            assert!(!supported_platform(text), "{text}");
+        }
+    }
     fn plan() -> serde_json::Value {
         json!({"version":"1.0","rpms":[
             {"nevra":"lg-buddy-2.0.0-1.x86_64","action":"Upgrade","reason":"User","repo_id":"@commandline","package_path":"./packages/lg-buddy-2.0.0-1.x86_64.rpm"},
@@ -314,13 +458,13 @@ mod tests {
             "2.0.0-1",
             "lg-buddy-2.0.0-1.x86_64.rpm",
         )
+        .map(|plan| plan.local_package)
     }
     #[test]
     fn prerelease_plan_checks_native_identity_and_portable_filename_separately() {
         let mut value = plan();
         value["rpms"][0]["nevra"] = json!("lg-buddy-2.0.0~beta.3-1.x86_64");
-        value["rpms"][0]["package_path"] =
-            json!("./packages/lg-buddy-2.0.0-beta.3-1.x86_64.rpm");
+        value["rpms"][0]["package_path"] = json!("./packages/lg-buddy-2.0.0-beta.3-1.x86_64.rpm");
         let verify = |value: &serde_json::Value| {
             verify_plan(
                 &serde_json::to_vec(value).unwrap(),
@@ -330,14 +474,12 @@ mod tests {
             )
         };
         assert_eq!(
-            verify(&value).unwrap(),
+            verify(&value).unwrap().local_package,
             "./packages/lg-buddy-2.0.0-beta.3-1.x86_64.rpm"
         );
-        value["rpms"][0]["package_path"] =
-            json!("./packages/lg-buddy-2.0.0~beta.3-1.x86_64.rpm");
+        value["rpms"][0]["package_path"] = json!("./packages/lg-buddy-2.0.0~beta.3-1.x86_64.rpm");
         assert!(verify(&value).is_err());
-        value["rpms"][0]["package_path"] =
-            json!("./packages/lg-buddy-2.0.0-beta.3-1.x86_64.rpm");
+        value["rpms"][0]["package_path"] = json!("./packages/lg-buddy-2.0.0-beta.3-1.x86_64.rpm");
         value["rpms"][0]["nevra"] = json!("lg-buddy-2.0.0-1.x86_64");
         assert!(verify(&value).is_err());
     }
@@ -347,6 +489,94 @@ mod tests {
         assert!(verify(&value).is_ok());
         value["rpms"].as_array_mut().unwrap().push(json!({"nevra":"example-1.0-1.x86_64","action":"Install","reason":"Dependency","repo_id":"fedora","package_path":"./packages/example-1.0-1.x86_64.rpm"}));
         assert!(verify(&value).is_ok());
+    }
+    #[test]
+    fn stored_repository_ids_preserve_the_local_package_boundary() {
+        let mut value = plan();
+        value["rpms"][0]["repo_id"] = json!("@stored_transaction(@commandline)");
+        value["rpms"].as_array_mut().unwrap().push(json!({
+            "nevra":"example-1.0-1.x86_64", "action":"Install", "reason":"Dependency",
+            "repo_id":"@stored_transaction(fedora)", "package_path":"./packages/example.rpm"
+        }));
+        let checked = verify_plan(
+            &serde_json::to_vec(&value).unwrap(),
+            "1.0.0-1",
+            "2.0.0-1",
+            "lg-buddy-2.0.0-1.x86_64.rpm",
+        )
+        .unwrap();
+        assert_eq!(
+            checked.local_package,
+            "./packages/lg-buddy-2.0.0-1.x86_64.rpm"
+        );
+        assert_eq!(checked.repository_packages, ["./packages/example.rpm"]);
+        for repository in [
+            "@commandline",
+            "@stored_transaction(@commandline)",
+            "@System",
+            "@stored_transaction(@System)",
+            "@stored_transaction()",
+            "@stored_transaction(fedora",
+            "@stored_transaction(fedora))",
+            "@stored_transaction(@stored_transaction(fedora))",
+        ] {
+            value["rpms"][2]["repo_id"] = json!(repository);
+            assert!(
+                verify(&value).is_err(),
+                "accepted dependency from {repository}"
+            );
+        }
+        value["rpms"][2]["repo_id"] = json!("@stored_transaction(fedora)");
+        for repository in [
+            "@stored_transaction(fedora)",
+            "@stored_transaction(@commandline))",
+        ] {
+            value["rpms"][0]["repo_id"] = json!(repository);
+            assert!(
+                verify(&value).is_err(),
+                "accepted LG Buddy from {repository}"
+            );
+        }
+        value["rpms"][0]["repo_id"] = json!("@stored_transaction(@commandline)");
+        value["rpms"][1]["repo_id"] = json!("@stored_transaction(@System)");
+        assert!(verify(&value).is_err());
+    }
+
+    #[test]
+    fn stored_repository_rpms_require_signatures_and_digests() {
+        // The Fedora integration supplies genuine signed and unsigned RPMs;
+        // ordinary unit runs do not require RPM tools or a system keyring.
+        let Some(signed) = std::env::var_os("LG_BUDDY_TEST_SIGNED_RPM") else {
+            return;
+        };
+        let unsigned = std::env::var_os("LG_BUDDY_TEST_UNSIGNED_RPM").unwrap();
+        let temp = std::env::temp_dir().join(format!(
+            "lg-buddy-rpm-signatures-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&temp).unwrap();
+        fs::create_dir(temp.join("packages")).unwrap();
+        let path = temp.join("packages/dependency.rpm");
+        let plan = VerifiedPlan {
+            local_package: "unused".into(),
+            repository_packages: vec!["./packages/dependency.rpm".into()],
+        };
+        fs::copy(signed, &path).unwrap();
+        verify_repository_packages(&temp, &plan).unwrap();
+        let mut bytes = fs::read(&path).unwrap();
+        *bytes.last_mut().unwrap() ^= 1;
+        fs::write(&path, bytes).unwrap();
+        assert!(verify_repository_packages(&temp, &plan).is_err());
+        fs::copy(unsigned, &path).unwrap();
+        assert!(verify_repository_packages(&temp, &plan).is_err());
+        fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink("/etc/passwd", &path).unwrap();
+        assert!(verify_repository_packages(&temp, &plan).is_err());
+        fs::remove_dir_all(temp).unwrap();
     }
     #[test]
     fn plan_refuses_destructive_actions_and_changed_identity() {

@@ -34,6 +34,7 @@ pub enum UpdateInstallError {
     DebianPackage(BundleAcquisitionError),
     RpmPackage(BundleAcquisitionError),
     PackageState(String),
+    UnsupportedRpmPlatform,
     OwnershipChanged(InstallationOwnership),
     Relaunch(io::Error),
     InvalidCurrentVersion {
@@ -91,6 +92,7 @@ impl fmt::Display for UpdateInstallError {
             Self::DebianPackage(error) => write!(formatter, "Debian package verification failed: {error}"),
             Self::RpmPackage(error) => write!(formatter, "RPM package verification failed: {error}"),
             Self::PackageState(error) => write!(formatter, "Native package state could not be verified: {error}"),
+            Self::UnsupportedRpmPlatform => formatter.write_str(crate::rpm_update::PLATFORM_GUIDANCE),
             Self::OwnershipChanged(_) => formatter.write_str("installation ownership changed after confirmation; start a fresh update check"),
             Self::Relaunch(error) => write!(formatter, "update installed, but the installed GUI could not be started: {error}"),
             Self::InvalidCurrentVersion { version, source } => {
@@ -203,6 +205,7 @@ impl Error for UpdateInstallError {
             Self::InstalledIdentity(error) => Some(error),
             Self::InitialPreflight(_)
             | Self::PackageState(_)
+            | Self::UnsupportedRpmPlatform
             | Self::OwnershipChanged(_)
             | Self::OwnershipRefused(_)
             | Self::DowngradeRefused { .. }
@@ -310,6 +313,7 @@ impl UpdateInstallError {
             Self::DebianPackage(_) => "The Debian release package could not be verified.".to_string(),
             Self::RpmPackage(_) => "The RPM release package could not be verified.".to_string(),
             Self::PackageState(_) => "The native package update could not be verified. Review the error details and resolve the host or package state before retrying.".into(),
+            Self::UnsupportedRpmPlatform => crate::rpm_update::PLATFORM_GUIDANCE.into(),
             Self::OwnershipChanged(_) => "Installation ownership changed after confirmation. Start a fresh update check.".into(),
             Self::Relaunch(_) => "The update was installed and verified, but LG Buddy could not restart. Open it from the application menu.".into(),
             Self::Output(_) => "The upgrade result could not be reported.".to_string(),
@@ -674,7 +678,7 @@ fn check_update_delivery(
 }
 
 fn system_update_preflight(require_gui: bool) -> Result<UpdateDelivery, UpdateInstallError> {
-    check_update_delivery(
+    let delivery = check_update_delivery(
         PackageDatabase::system().owner_of(&installed_binary_path()),
         || {
             if require_gui {
@@ -688,7 +692,12 @@ fn system_update_preflight(require_gui: bool) -> Result<UpdateDelivery, UpdateIn
             PackageFamily::Rpm => crate::rpm_update::installed_version().map(|_| ()),
             _ => unreachable!(),
         },
-    )
+    )?;
+    if delivery == UpdateDelivery::Dnf {
+        crate::rpm_update::automatic_update_preflight()
+            .map_err(|_| UpdateInstallError::UnsupportedRpmPlatform)?;
+    }
+    Ok(delivery)
 }
 
 pub(crate) fn gui_update_ownership() -> InstallationOwnership {
@@ -697,7 +706,7 @@ pub(crate) fn gui_update_ownership() -> InstallationOwnership {
         Ok(UpdateDelivery::Apt) => InstallationOwnership::Package {
             family: PackageFamily::Dpkg,
         },
-        Ok(UpdateDelivery::Dnf) => InstallationOwnership::Package { family: PackageFamily::Rpm },
+        Ok(UpdateDelivery::Dnf) | Err(UpdateInstallError::UnsupportedRpmPlatform) => InstallationOwnership::Package { family: PackageFamily::Rpm },
         Err(UpdateInstallError::OwnershipRefused(ownership)) => ownership,
         Err(_) => InstallationOwnership::Unknown,
     }
@@ -1995,6 +2004,15 @@ mod tests {
                 None,
             ),
         ]
+    }
+
+    #[test]
+    fn unsupported_rpm_platform_has_actionable_user_guidance() {
+        let error = UpdateInstallError::UnsupportedRpmPlatform;
+        assert_eq!(error.user_message(), error.to_string());
+        assert!(error.user_message().contains("Fedora 44 or newer"));
+        assert!(error.user_message().contains("verify the RPM checksum"));
+        assert!(error.user_message().contains("manually with DNF"));
     }
 
     #[test]

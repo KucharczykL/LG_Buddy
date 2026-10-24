@@ -39,7 +39,7 @@ def fixture_members(identity: ReleaseIdentity = IDENTITY) -> dict[str, bytes]:
         f"docs/{ICON}": (REPO / f"data/icons/hicolor/scalable/apps/{ICON}").read_bytes(),
         "LG_Buddy_Brightness.desktop": (REPO / "io.github.staphylococcus.LGBuddy.desktop").read_bytes(),
         "README.md": b"# LG Buddy\n", "LICENSE": (REPO / "LICENSE").read_bytes(),
-        "docs/package-ownership.md": (REPO / "docs/package-ownership.md").read_bytes(),
+        "docs/development.md": (REPO / "docs/development.md").read_bytes(),
     }
     for unit in (*SYSTEM_UNITS, *USER_UNITS, "lg_buddy.conf"):
         members[f"systemd/{unit}"] = (REPO / "systemd" / unit).read_bytes()

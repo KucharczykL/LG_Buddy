@@ -26,6 +26,15 @@ def release(version, *, native=True, draft=False):
 
 
 class CanaryTests(unittest.TestCase):
+    def test_manual_rpm_transition_is_limited_to_known_immutable_helpers(self):
+        for tag, commit in canary.LEGACY_RPM_HELPERS.items():
+            self.assertTrue(canary.manual_rpm_transition('rpm', tag, commit, '2.0.0-beta.5'))
+            self.assertFalse(canary.manual_rpm_transition('rpm', tag, commit, '2.0.0'))
+            self.assertFalse(canary.manual_rpm_transition('debian', tag, commit, '2.0.0-beta.5'))
+            self.assertFalse(canary.manual_rpm_transition('rpm', tag, '0' * 40, '2.0.0-beta.5'))
+            self.assertFalse(canary.manual_rpm_transition('rpm', tag, commit, '2.0.0-beta.4'))
+        self.assertFalse(canary.manual_rpm_transition('rpm', 'v2.0.0-beta.5', '0' * 40, '2.0.0-beta.6'))
+
     def test_history_supports_old_gh_and_preserves_multiline_release_records(self):
         releases = [release('2.0.0-beta.2'), release('2.0.0-beta.1', draft=True)]
         releases[0]['body'] = 'First line\nQuoted "release" notes'
