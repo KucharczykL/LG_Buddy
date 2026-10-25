@@ -285,9 +285,21 @@ start_setup_session() {
 }
 
 publish_setup_assessment() {
-    gdbus call --session --dest io.github.Staphylococcus.LGBuddy \
-        --object-path /io/github/Staphylococcus/LGBuddy/Session \
-        --method io.github.Staphylococcus.LGBuddy.Session1.RequestSetupAssessment >/dev/null
+    "$ACCESSIBILITY_PYTHON" - <<'PY_ASSESSMENT'
+import dbus, json, time
+peer = dbus.Interface(dbus.SessionBus().get_object(
+    'io.github.Staphylococcus.LGBuddy', '/io/github/Staphylococcus/LGBuddy/Session'),
+    'io.github.Staphylococcus.LGBuddy.Session1')
+instance, revision = peer.RequestSetupAssessment()
+deadline = time.monotonic() + 5
+while time.monotonic() < deadline:
+    snapshot = json.loads(peer.GetSetupAssessment())
+    if snapshot['instance'] == instance and snapshot['revision'] >= revision:
+        break
+    time.sleep(.05)
+else:
+    raise AssertionError('Setup fixture did not publish the requested assessment')
+PY_ASSESSMENT
 }
 
 if [ "${LG_BUDDY_GUI_JOURNEY_ONLY:-0}" = 1 ]; then
@@ -303,24 +315,39 @@ reset_tv_state 50 20 true "$GET_BRIGHTNESS" 2000 false
 start_accessibility_bus
 start_setup_session
 cp "$CONFIG_FILE" "$WORK_DIR/current-config.env"
-sed -i 's/^tvs_primary_platform=lg_webos$/tvs_primary_platform=bscpylgtv/' "$CONFIG_FILE"
-cp "$CONFIG_FILE" "$WORK_DIR/stale-config.env"
+sed -i 's/^tvs_primary_platform=lg_webos$/tvs_primary_platform=bscpylgtv/; s/^screen_backend=auto$/screen_backend=swayidle/' "$CONFIG_FILE"
+cp "$WORK_DIR/tvs/primary/access-token.json" "$WORK_DIR/migration-token.snapshot"
+python3 - "$CONFIG_FILE" "$WORK_DIR/tvs/primary/access-token.json" "$WORK_DIR/migration-access.json" <<'PY_ACCESS'
+import json, sys
+from pathlib import Path
+facts = []
+for name in sys.argv[1:3]:
+    status = Path(name).stat()
+    facts.append((status.st_uid, status.st_gid, status.st_mode & 0o7777))
+Path(sys.argv[3]).write_text(json.dumps(facts))
+PY_ACCESS
+# Keep the daemon peer's stale publication until explicitly reassessed, so
+# startup conversion is observed before any TV-dependent work is admitted.
 publish_setup_assessment
 start_gui enabled "" "" normal
 observe_gui_state --expected-tvs-state setup-required
-observe_gui_state --activate-control "Complete setup"
-observe_gui_state --expected-text "saved TV configuration needs migration"
-send_closing_mnemonic Escape
-observe_gui_state --expected-tvs-state setup-required
+cmp "$CONFIG_FILE" "$WORK_DIR/current-config.env" || fail "GUI startup did not convert only the supported legacy selectors."
+cmp "$WORK_DIR/tvs/primary/access-token.json" "$WORK_DIR/migration-token.snapshot" || fail "GUI startup changed the saved credential."
+python3 - "$CONFIG_FILE" "$WORK_DIR/tvs/primary/access-token.json" "$WORK_DIR/migration-access.json" <<'PY_ACCESS'
+import json, sys
+from pathlib import Path
+expected = json.loads(Path(sys.argv[3]).read_text())
+for name, facts in zip(sys.argv[1:3], expected):
+    status = Path(name).stat()
+    assert [status.st_uid, status.st_gid, status.st_mode & 0o7777] == facts, name
+PY_ACCESS
 gapplication action io.github.staphylococcus.LGBuddy quit
-finish_gui "migration recovery gate"
-cmp "$CONFIG_FILE" "$WORK_DIR/stale-config.env" || fail "Migration gate changed configuration."
+finish_gui "automatic migration before setup reassessment"
 python3 - "$STATE_FILE" <<'PY_STALE'
 import json, sys
 state = json.load(open(sys.argv[1]))
 assert state["connection_count"] == 0 and not state["request_uris"], state
 PY_STALE
-cp "$WORK_DIR/current-config.env" "$CONFIG_FILE"
 publish_setup_assessment
 start_gui enabled "" "" normal
 NORMAL_GUI_PID="$GUI_PID"

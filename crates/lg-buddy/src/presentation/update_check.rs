@@ -2,6 +2,7 @@ use crate::presentation::brightness::UserFacingError;
 use crate::presentation::settings::SettingsAction;
 use crate::settings_view::SettingsIntent;
 use crate::updates::UpdateChannel;
+use crate::upgrade_preflight::InstallationOwnership;
 use crate::version::VersionInfo;
 
 /// Update availability on the checked channel, without an installation target.
@@ -11,6 +12,7 @@ pub struct UpdateCheckReport {
     pub channel: UpdateChannel,
     pub update_available: bool,
     pub warning: Option<String>,
+    pub installation_ownership: InstallationOwnership,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,6 +84,12 @@ impl UpdateCheckPresentation {
     pub(crate) fn clear_result(&mut self) {
         self.result = None;
         self.error = None;
+    }
+
+    pub(crate) fn set_installation_ownership(&mut self, ownership: InstallationOwnership) {
+        if let Some(report) = &mut self.result {
+            report.installation_ownership = ownership;
+        }
     }
 
     pub(crate) fn complete(&mut self, result: Result<UpdateCheckReport, UserFacingError>) {

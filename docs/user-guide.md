@@ -8,6 +8,48 @@ up LG Buddy for the first time, start with the [installation instructions](../RE
 [Choose blanking and wake behavior](#settings) · [Use a terminal](#common-commands) ·
 [Updates](#updates)
 
+## Install a native package
+
+Choose the `.deb` or `.rpm` for your [supported distribution](../README.md#distribution-support).
+These steps also work for manual package updates:
+
+1. Download the x86_64 package and `sha256sums.txt` from the **same**
+   [LG Buddy release](https://github.com/Staphylococcus/LG_Buddy/releases).
+2. In the download directory, verify the checksums and confirm that the package
+   reports `OK`:
+
+   ```sh
+   sha256sum --check --ignore-missing sha256sums.txt
+   ```
+
+3. Install the verified local package with your package manager. For example,
+   for beta.4 on Ubuntu:
+
+   ```sh
+   sudo apt install ./lg-buddy_2.0.0-beta.4-1_amd64.deb
+   ```
+
+   Or on Fedora:
+
+   ```sh
+   sudo dnf5 install ./lg-buddy-2.0.0-beta.4-1.x86_64.rpm
+   ```
+
+   Substitute the filename you downloaded and review the transaction before
+   confirming it.
+4. Run `lg-buddy` as your normal user to complete setup. Installing the package
+   does not pair a TV or activate services on its own.
+
+Updates retain settings, pairing credentials and service configuration. Keep
+using the same package format for an existing package installation.
+
+To switch from a release bundle, preserve your selected configuration path and
+credentials, run that bundle's uninstaller and choose to keep configuration,
+then install the package and complete setup as the configuration's owner.
+For a custom configuration path, set `LG_BUDDY_CONFIG` to that file during setup.
+Package installation refuses overlapping bundle files or local service units;
+resolve any reported conflicts before retrying.
+
 <a id="desktop-app"></a>
 ## Open LG Buddy
 
@@ -380,9 +422,14 @@ The installation dialog closes on failure, and **Install update…** offers
 another attempt. If installation succeeded but restarting failed, the row
 identifies the required restart and its action retries restarting only.
 
-This flow requires a compatible mutable release-bundle installation. Use the
-package manager for externally managed installations. Graphical authorization
-requires `pkexec` and a desktop authorization agent.
+This flow supports official release bundles and healthy LG Buddy `.deb`/`.rpm`
+installations. RPM updates require Fedora 44 or newer; Fedora 43 RPM users
+should [update manually](#manual-rpm-updates). A matching package must exist on
+the selected release. See the README for [supported distributions](../README.md#distribution-support).
+Graphical authorization requires `pkexec` and a desktop authorization agent.
+
+Installing a `.deb` or `.rpm` does not add an APT or DNF repository. Use LG
+Buddy's update screen or CLI to discover official releases.
 
 ### Headless update commands
 
@@ -401,9 +448,28 @@ lg-buddy updates install
 Review the offered version and type `yes` to download, verify, and install it.
 Your settings and pairing are preserved. Both commands use your saved update
 channel. If the upgrade is refused, follow the reported reason before retrying.
+An APT update in your normal desktop terminal also launches the installed GUI.
+Root/headless terminal updates leave GUI launch to you.
 
 If the installed version predates `v1.4.0-beta.2`, install one updater-capable
 release bundle manually before using `updates install`.
+
+### Manual RPM updates
+
+On Fedora 43, in-app RPM updates are unavailable. The recommended route is to
+[upgrade Fedora](https://docs.fedoraproject.org/en-US/quick-docs/upgrading-fedora-new-release/)
+to 44 or newer. You can also follow the [manual package steps](#install-a-native-package)
+using the RPM. This avoids the stored transaction replay that can fail on
+Fedora 43 when an update adds a dependency. In-app release checks remain
+available even though RPM installation is manual.
+
+### Early v2 RPM betas on Fedora 44+
+
+The beta.3 and beta.4 RPM packages contain an updater that cannot read newer
+DNF stored repository names. If either is installed on Fedora 44+, perform
+one [manual RPM update](#manual-rpm-updates) to a later release containing the
+fix. Subsequent updates work in the app. Upgrading Fedora alone does not
+replace the older LG Buddy updater.
 
 ## Choose preview releases and automatic checks
 
@@ -469,6 +535,30 @@ For deeper behavior and integration details, see [Technical references](#technic
 
 <a id="uninstall"></a>
 ## Remove LG Buddy
+
+### Debian or RPM packages
+
+First disable the session integration as its user:
+
+```sh
+systemctl --user disable --now LG_Buddy_screen.service LG_Buddy_update_check.timer
+```
+
+Then remove the package with `sudo apt remove lg-buddy` on Ubuntu or
+`sudo dnf5 remove lg-buddy` on Fedora. This stops/disables the package's machine
+services and removes its payload. Settings, pairing credentials, user state and
+generated machine bindings/drop-ins are retained. `apt purge` also retains
+these unowned files; RPM has no separate purge operation.
+
+For an explicit machine reset, an administrator must inspect
+`/etc/lg-buddy/config-path` and the `config.conf` drop-ins under
+`/etc/systemd/system/{LG_Buddy,LG_Buddy_lifecycle}.service.d/`. Remove only
+verified, unmodified LG Buddy-generated bindings/drop-ins. Preserve modified
+or foreign files for administrator resolution, and never follow the binding
+into the user's settings or credentials. Resetting user data is a separate
+operation by that user.
+
+### Release bundle
 
 From the extracted release archive, run:
 

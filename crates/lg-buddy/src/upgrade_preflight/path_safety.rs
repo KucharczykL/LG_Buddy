@@ -519,24 +519,35 @@ impl<'a, F: FilesystemFacts> Checker<'a, F> {
                 return None;
             }
         };
-        let lines: Vec<_> = contents
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .collect();
-        if lines.len() != 1 {
-            self.refuse(
-                "config-discovery",
+        match crate::config::binding::parse(&contents) {
+            Ok(config) => Some(config),
+            Err(error) => {
+                self.refuse(
+                    "config-discovery",
+                    Some(path.to_path_buf()),
+                    error.to_string(),
+                    "rewrite the pointer with the canonical absolute path to config.env",
+                );
+                None
+            }
+        }
+    }
+
+    pub(super) fn check_user_selection(&mut self, path: &Path, config: &Path) {
+        if matches!(self.filesystem.path_facts(path), Err(error) if error.kind() == io::ErrorKind::NotFound) {
+            return;
+        }
+        match self.filesystem.read_to_string(path)
+            .and_then(|contents| crate::config::binding::parse(&contents))
+        {
+            Ok(selected) if selected == config => {}
+            _ => self.refuse(
+                "user-config-discovery",
                 Some(path.to_path_buf()),
-                "config pointer must contain exactly one non-empty path",
-                "rewrite the pointer with the absolute path to config.env",
-            );
-            return None;
+                "user config selection is invalid or conflicts with the machine binding",
+                "resolve the user's config selection before upgrading",
+            ),
         }
-        let config_path = PathBuf::from(lines[0]);
-        if !check_normalized_absolute(&mut self.failures, "config-discovery", &config_path) {
-            return None;
-        }
-        Some(config_path)
     }
 
     pub(super) fn check_config_tree(&mut self, config_path: &Path, owner_uid: u32) {

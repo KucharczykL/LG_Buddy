@@ -8,6 +8,7 @@ struct Fixture {
     root: PathBuf,
     config: PathBuf,
     units: PathBuf,
+    selection: PathBuf,
     user: RefCell<BTreeMap<String, (bool, bool)>>,
     system: Cell<bool>,
     active: Cell<bool>,
@@ -21,6 +22,8 @@ struct Fixture {
     fail_stop: Cell<bool>,
     fail_state: Cell<bool>,
     fail_start: Cell<bool>,
+    ownership: RefCell<Result<PathOwnership, PackageDatabaseError>>,
+    package_database: crate::upgrade_preflight::PackageDatabase,
 }
 impl Fixture {
     fn new() -> Self {
@@ -39,6 +42,7 @@ impl Fixture {
         .unwrap();
         Self {
             units: root.join("user/systemd"),
+            selection: root.join("user/lg-buddy/config-path"),
             root,
             config,
             user: RefCell::new(BTreeMap::new()),
@@ -54,15 +58,20 @@ impl Fixture {
             fail_stop: Cell::new(false),
             fail_state: Cell::new(false),
             fail_start: Cell::new(false),
+            ownership: RefCell::new(Ok(PathOwnership::Unowned)),
+            package_database: fixture_package_database(Ok(PathOwnership::Unowned)),
         }
     }
     fn plan(&self) -> ServiceInstallation<'_, Self> {
         ServiceInstallation {
             config: &self.config,
             user_units: &self.units,
+            user_selection: &self.selection,
             system_root: &self.root,
             controller: self,
             authorization: crate::setup::flow::AuthorizationMode::Noninteractive,
+            ownership: self.ownership.borrow().clone(),
+            package_database: &self.package_database,
         }
     }
     fn run(&self) -> StepResponse {
@@ -711,6 +720,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then main "$@"; fi
     let context = SetupContext {
         config: fixture.config.clone(),
         user_units: fixture.units.clone(),
+        user_selection: fixture.selection.clone(),
         system_root: fixture.root.clone(),
         kwin_helper: helper,
         lock_path: lock_path.clone(),
@@ -721,9 +731,12 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then main "$@"; fi
             ),
         ),
     };
+    let ownership = fixture.ownership.borrow().clone();
+    let package_database = fixture_package_database(ownership);
     NativeSteps {
         context,
         controller: fixture,
+        package_database,
     }
 }
 
@@ -1068,4 +1081,347 @@ fn native_assessment_tracks_repairs_removals_and_desktop_changes_without_mutatio
     check(SetupStatus::Complete);
     fs::remove_file(&token).unwrap();
     check(SetupStatus::Incomplete);
+}
+
+fn package_fixture(family: crate::upgrade_preflight::PackageFamily) -> Fixture {
+    let fixture = Fixture::new();
+    *fixture.ownership.borrow_mut() = Ok(PathOwnership::Owned(
+        crate::upgrade_preflight::PackageOwner {
+            family,
+            name: "lg-buddy".into(),
+            version: None,
+        },
+    ));
+    for spec in fixture.plan().vendor_files() {
+        write_file(&spec).unwrap();
+    }
+    fixture
+}
+
+#[test]
+fn package_setup_writes_dropins_and_machine_binding_and_preserves_vendor_assets() {
+    use crate::upgrade_preflight::PackageFamily;
+    for family in [
+        PackageFamily::Dpkg,
+        PackageFamily::Rpm,
+        PackageFamily::Pacman,
+    ] {
+        let fixture = package_fixture(family);
+        let original: Vec<_> = fixture
+            .plan()
+            .vendor_files()
+            .into_iter()
+            .map(|spec| {
+                let metadata = fs::metadata(&spec.path).unwrap();
+                (
+                    spec.path.clone(),
+                    metadata.ino(),
+                    metadata.modified().unwrap(),
+                    fs::read(&spec.path).unwrap(),
+                )
+            })
+            .collect();
+        assert!(matches!(
+            fixture.plan().inspect(),
+            StepResponse::ActionRequired {
+                requires_authorization: true,
+                ..
+            }
+        ));
+        assert!(fixture.calls.borrow().is_empty());
+        assert_eq!(fixture.run(), StepResponse::Complete);
+        for (path, inode, modified, contents) in original {
+            let metadata = fs::metadata(&path).unwrap();
+            assert_eq!(metadata.ino(), inode);
+            assert_eq!(metadata.modified().unwrap(), modified);
+            assert_eq!(fs::read(&path).unwrap(), contents);
+        }
+        for spec in fixture
+            .plan()
+            .user_files()
+            .unwrap()
+            .into_iter()
+            .chain(fixture.plan().system_files().unwrap())
+        {
+            assert!(
+                spec.path.ends_with("config.conf") || spec.path.ends_with("lg-buddy/config-path"),
+                "unexpected write: {}",
+                spec.path.display()
+            );
+            assert!(matches_file(&spec).unwrap());
+        }
+        assert!(!fixture.root.join("usr/lib/lg-buddy/config-path").exists());
+        assert!(!fixture
+            .root
+            .join("etc/systemd/system/LG_Buddy.service")
+            .exists());
+        assert!(!fixture.units.join(SCREEN).exists());
+        fixture.calls.borrow_mut().clear();
+        assert_eq!(fixture.run(), StepResponse::Complete);
+        assert!(fixture.calls.borrow().is_empty());
+    }
+}
+
+#[test]
+fn damaged_package_assets_block_setup_before_any_mutation() {
+    use crate::upgrade_preflight::PackageFamily;
+    for index in 0..7 {
+        for damage in ["missing", "changed", "symlink", "mode"] {
+            let fixture = package_fixture(PackageFamily::Dpkg);
+            let spec = fixture.plan().vendor_files().remove(index);
+            match damage {
+                "missing" => fs::remove_file(&spec.path).unwrap(),
+                "changed" => fs::write(&spec.path, "broken package asset").unwrap(),
+                "mode" => {
+                    fs::set_permissions(&spec.path, fs::Permissions::from_mode(0o666)).unwrap()
+                }
+                _ => {
+                    fs::remove_file(&spec.path).unwrap();
+                    std::os::unix::fs::symlink(&fixture.config, &spec.path).unwrap();
+                }
+            }
+            let StepResponse::Blocked(error) = fixture.run() else {
+                panic!("{damage} package asset should block")
+            };
+            assert!(error.diagnostic.contains(&spec.path.display().to_string()));
+            assert_eq!(error.recovery.action, Action::RepairExternally);
+            assert!(fixture.calls.borrow().is_empty());
+            assert!(!fixture.units.exists());
+            assert!(!fixture.root.join("etc/systemd").exists());
+        }
+    }
+}
+
+#[test]
+fn package_setup_refuses_shadowing_local_base_units() {
+    let fixture = package_fixture(crate::upgrade_preflight::PackageFamily::Dpkg);
+    fs::create_dir_all(&fixture.units).unwrap();
+    fs::write(fixture.units.join(SCREEN), "local override").unwrap();
+    assert!(matches!(fixture.run(), StepResponse::Blocked(_)));
+    assert!(fixture.calls.borrow().is_empty());
+    assert_eq!(
+        fs::read_to_string(fixture.units.join(SCREEN)).unwrap(),
+        "local override"
+    );
+}
+
+#[test]
+fn uncertain_package_ownership_never_falls_back_to_bundle_repair() {
+    for ownership in [
+        Err(PackageDatabaseError::ProbeFailed(
+            "database unavailable".into(),
+        )),
+        Ok(PathOwnership::Conflicting(vec![])),
+    ] {
+        let fixture = Fixture::new();
+        *fixture.ownership.borrow_mut() = ownership;
+        assert!(matches!(fixture.run(), StepResponse::Blocked(_)));
+        assert!(fixture.calls.borrow().is_empty());
+        assert!(!fixture.units.exists());
+    }
+}
+
+#[test]
+fn native_package_setup_completes_without_reinstalling_package_assets() {
+    use crate::setup::flow::{FlowOutcome, SetupStep, StepAnswer};
+    let fixture = package_fixture(crate::upgrade_preflight::PackageFamily::Dpkg);
+    fs::write(&fixture.config, "updates_auto_check=disabled\nscreen_idle_blank=enabled\ntvs_primary_ip=192.0.2.42\ntvs_primary_mac=02:11:22:33:44:55\ntvs_primary_input=HDMI_1\ntvs_primary_platform=lg_webos\n").unwrap();
+    let token = fixture.root.join("tvs/primary/access-token.json");
+    fs::create_dir_all(token.parent().unwrap()).unwrap();
+    fs::write(&token, r#"{"access_token":"existing"}"#).unwrap();
+    let root = fixture.root.clone();
+    let mut flow = native_flow(fixture, false);
+    let before = flow.snapshot();
+    assert_eq!(before.current().unwrap().0, SetupStep::Services);
+    assert!(matches!(
+        before.current().unwrap().1,
+        StepResponse::ActionRequired { .. }
+    ));
+    let after = flow.advance_until_pause(before.token, StepAnswer::Continue, &mut |_| {});
+    assert_eq!(after.outcome, FlowOutcome::Complete);
+    assert!(root
+        .join("etc/systemd/system/LG_Buddy_lifecycle.service.d/config.conf")
+        .exists());
+    assert!(!root
+        .join("etc/systemd/system/LG_Buddy_lifecycle.service")
+        .exists());
+    assert_eq!(
+        fs::read_to_string(token).unwrap(),
+        r#"{"access_token":"existing"}"#
+    );
+}
+
+fn fixture_package_database(
+    ownership: Result<PathOwnership, PackageDatabaseError>,
+) -> crate::upgrade_preflight::PackageDatabase {
+    crate::upgrade_preflight::PackageDatabase::with_probe(
+        vec![crate::upgrade_preflight::Database {
+            name: "dpkg-query",
+            exec: "/fixture/dpkg-query",
+            args: &["-S"],
+            family: crate::upgrade_preflight::PackageFamily::Dpkg,
+            env_remove: &[],
+        }],
+        move |_, path| match if path.ends_with("usr/bin/lg-buddy") {
+            &ownership
+        } else {
+            &Ok(PathOwnership::Unowned)
+        } {
+            Ok(PathOwnership::Owned(_)) => crate::upgrade_preflight::ProbeOutcome::Ran {
+                code: 0,
+                stdout: format!("lg-buddy: {}\n", path.display()),
+                stderr: String::new(),
+            },
+            Ok(PathOwnership::Unowned) => crate::upgrade_preflight::ProbeOutcome::Ran {
+                code: 1,
+                stdout: String::new(),
+                stderr: String::new(),
+            },
+            _ => crate::upgrade_preflight::ProbeOutcome::Failed(
+                "fixture database unavailable".into(),
+            ),
+        },
+    )
+}
+
+#[test]
+fn package_owned_or_uncertain_dropins_are_never_replaced() {
+    let mut fixture = package_fixture(crate::upgrade_preflight::PackageFamily::Dpkg);
+    let target = fixture.units.join("LG_Buddy_screen.service.d/config.conf");
+    fs::create_dir_all(target.parent().unwrap()).unwrap();
+    fs::write(&target, "package configuration").unwrap();
+    let database = || crate::upgrade_preflight::Database {
+        name: "dpkg-query",
+        exec: "/fixture/dpkg-query",
+        args: &["-S"],
+        family: crate::upgrade_preflight::PackageFamily::Dpkg,
+        env_remove: &[],
+    };
+    for failure in [false, true] {
+        let protected = target.clone();
+        fixture.package_database = crate::upgrade_preflight::PackageDatabase::with_probe(
+            vec![database()],
+            move |_, path| {
+                if path == protected {
+                    if failure {
+                        crate::upgrade_preflight::ProbeOutcome::Failed("database failed".into())
+                    } else {
+                        crate::upgrade_preflight::ProbeOutcome::Ran {
+                            code: 0,
+                            stdout: format!("lg-buddy: {}\n", path.display()),
+                            stderr: String::new(),
+                        }
+                    }
+                } else {
+                    crate::upgrade_preflight::ProbeOutcome::Ran {
+                        code: 1,
+                        stdout: String::new(),
+                        stderr: String::new(),
+                    }
+                }
+            },
+        );
+        assert!(matches!(fixture.run(), StepResponse::Blocked(_)));
+        assert!(fixture.calls.borrow().is_empty());
+        assert_eq!(
+            fs::read_to_string(&target).unwrap(),
+            "package configuration"
+        );
+    }
+}
+
+#[test]
+fn package_setup_rejects_redirected_machine_and_user_dropins_before_mutation() {
+    for user in [false, true] {
+        for ancestor in [false, true] {
+            for target_exists in [false, true] {
+                let mut fixture = package_fixture(crate::upgrade_preflight::PackageFamily::Dpkg);
+                let destination = if user {
+                    fixture.units.join("LG_Buddy_screen.service.d/config.conf")
+                } else {
+                    fixture
+                        .root
+                        .join("etc/systemd/system/LG_Buddy_lifecycle.service.d/config.conf")
+                };
+                let link = if ancestor {
+                    destination.parent().unwrap().parent().unwrap()
+                } else {
+                    destination.parent().unwrap()
+                };
+                let vendor = fixture.root.join("usr/lib/redirected-dropins");
+                let actual = vendor.join(destination.strip_prefix(link).unwrap());
+                if target_exists {
+                    fs::create_dir_all(actual.parent().unwrap()).unwrap();
+                    fs::write(&actual, "package default\n").unwrap();
+                }
+                fs::create_dir_all(link.parent().unwrap()).unwrap();
+                std::os::unix::fs::symlink(&vendor, link).unwrap();
+                // The lexical destination is unowned; its redirected vendor
+                // target belongs to the package and must never be overwritten.
+                let protected = actual.clone();
+                fixture.package_database = crate::upgrade_preflight::PackageDatabase::with_probe(
+                    vec![crate::upgrade_preflight::Database {
+                        name: "dpkg-query",
+                        exec: "/fixture/dpkg-query",
+                        args: &["-S"],
+                        family: crate::upgrade_preflight::PackageFamily::Dpkg,
+                        env_remove: &[],
+                    }],
+                    move |_, path| crate::upgrade_preflight::ProbeOutcome::Ran {
+                        code: if path == protected { 0 } else { 1 },
+                        stdout: if path == protected {
+                            format!("lg-buddy: {}\n", path.display())
+                        } else {
+                            String::new()
+                        },
+                        stderr: String::new(),
+                    },
+                );
+                let StepResponse::Blocked(error) = fixture.run() else {
+                    panic!("redirected package destination was not blocked: {destination:?}");
+                };
+                assert!(error.diagnostic.contains("symlink"), "{error:?}");
+                assert!(fixture.calls.borrow().is_empty());
+                if target_exists {
+                    assert_eq!(fs::read_to_string(actual).unwrap(), "package default\n");
+                } else {
+                    assert!(!vendor.exists());
+                }
+                assert!(!fixture
+                    .root
+                    .join("etc/systemd/system/LG_Buddy.service.d/config.conf")
+                    .exists());
+            }
+        }
+    }
+}
+
+#[test]
+fn binding_directory_links_are_refused_before_authorization_in_both_layouts() {
+    for package in [false, true] {
+        for user in [false, true] {
+            let fixture = if package {
+                package_fixture(crate::upgrade_preflight::PackageFamily::Dpkg)
+            } else {
+                Fixture::new()
+            };
+            let directory = if user {
+                fixture.selection.parent().unwrap().to_path_buf()
+            } else {
+                fixture.root.join("etc/lg-buddy")
+            };
+            let external = fixture.root.join("redirected-binding");
+            fs::create_dir_all(&external).unwrap();
+            fs::write(external.join("config-path"), "retained\n").unwrap();
+            fs::create_dir_all(directory.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(&external, &directory).unwrap();
+            assert!(matches!(fixture.plan().inspect(), StepResponse::Blocked(_)));
+            assert!(matches!(fixture.run(), StepResponse::Blocked(_)));
+            assert!(fixture.calls.borrow().is_empty());
+            assert_eq!(
+                fs::read_to_string(external.join("config-path")).unwrap(),
+                "retained\n"
+            );
+        }
+    }
 }

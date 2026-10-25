@@ -139,6 +139,13 @@ pub fn run(command: GuiCommand) -> glib::ExitCode {
 }
 
 fn run_application(command: GuiCommand, replacing: bool) -> glib::ExitCode {
+    // Convert supported legacy contents locally as their owner before any
+    // config-dependent workers start. Version/runtime probes bypass this path.
+    if let Err(error) = lg_buddy::startup::backend_start() {
+        eprintln!("LG Buddy GUI: {error}");
+        // Existing current-config guards reject stale input. Keep the GUI's
+        // diagnostics and setup recovery available for invalid/unwritable data.
+    }
     glib::set_application_name(APPLICATION_NAME);
     let mut flags = gtk::gio::ApplicationFlags::HANDLES_COMMAND_LINE
         | gtk::gio::ApplicationFlags::ALLOW_REPLACEMENT;
@@ -2072,6 +2079,8 @@ pub(crate) mod controller_test_support {
                 self.started.send(channel).unwrap();
                 let available = self.replies.lock().unwrap().recv().unwrap()?;
                 Ok(UpdateCheckReport {
+                    installation_ownership:
+                        lg_buddy::upgrade_preflight::InstallationOwnership::Bundle,
                     installed_version: "1.6.0".into(),
                     channel,
                     update_available: available,
@@ -2242,6 +2251,8 @@ pub(crate) mod controller_test_support {
                 &self,
             ) -> Result<UpdateCheckReport, lg_buddy::settings_view::UpdateCheckError> {
                 Ok(UpdateCheckReport {
+                    installation_ownership:
+                        lg_buddy::upgrade_preflight::InstallationOwnership::Bundle,
                     installed_version: "1.6.0".into(),
                     channel: UpdateChannel::Stable,
                     update_available: true,

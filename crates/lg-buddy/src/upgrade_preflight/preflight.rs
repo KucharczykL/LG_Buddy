@@ -396,8 +396,22 @@ pub(super) fn evaluate_installed_state(
         checker.check_absent(&facts.layout.system_path(path));
     }
 
+    let pointer = facts.layout.config_pointer();
+    let selected_pointer = match filesystem.path_facts(&pointer) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            facts.layout.legacy_config_pointer()
+        }
+        _ => pointer.clone(),
+    };
+    checker.check_install_destination(
+        &pointer,
+        facts.system_owner_uid,
+        Some(system_trust),
+        InstallerPathPolicy::ReplaceFile,
+        "config-binding-migration",
+    );
     let config_path = checker.read_config_pointer(
-        &facts.layout.config_pointer(),
+        &selected_pointer,
         facts.system_owner_uid,
         &facts.layout.system_root,
     );
@@ -411,6 +425,15 @@ pub(super) fn evaluate_installed_state(
         ] {
             checker.check_integration_override(&path, &config_marker);
         }
+        let user_selection = facts.layout.user_config_home.join("lg-buddy/config-path");
+        checker.check_install_destination(
+            &user_selection,
+            facts.user_owner_uid,
+            Some(user_units_trust),
+            InstallerPathPolicy::ReplaceFile,
+            "user-config-discovery",
+        );
+        checker.check_user_selection(&user_selection, &config_path);
         checker.check_config_tree(&config_path, facts.user_owner_uid);
     }
 

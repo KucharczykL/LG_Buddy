@@ -13,6 +13,7 @@ use crate::update_install::{
     PreparedUpdateInstall, UpdateInstallCancellation, UpdateInstallError, UpdateInstallStage,
 };
 use crate::updates::UpdateChannel;
+use crate::upgrade_preflight::{InstallationOwnership, PackageFamily};
 
 #[derive(Debug, Clone)]
 pub enum UpdateInstallTask {
@@ -51,6 +52,10 @@ pub enum UpdateInstallOutcome {
     UpToDate,
     Installed(InstalledUpdate),
     Relaunched,
+    Restricted {
+        ownership: InstallationOwnership,
+        failure: Option<UpdateInstallFailure>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,25 +131,23 @@ impl UpdateInstallBackend for EnvironmentUpdateInstallBackend {
         operation: &UpdateInstallOperation,
         progress: &mut dyn FnMut(UpdateInstallStage),
     ) -> Result<UpdateInstallOutcome, UpdateInstallFailure> {
-        match operation.task() {
+        let result = match operation.task() {
             UpdateInstallTask::Prepare { cancellation } => {
-                prepare_gui_update_with_cancellation(cancellation)
-                    .map(|prepared| {
-                        prepared.map_or(
-                            UpdateInstallOutcome::UpToDate,
-                            UpdateInstallOutcome::Prepared,
-                        )
-                    })
-                    .map_err(Into::into)
+                prepare_gui_update_with_cancellation(cancellation).map(|prepared| {
+                    prepared.map_or(
+                        UpdateInstallOutcome::UpToDate,
+                        UpdateInstallOutcome::Prepared,
+                    )
+                })
             }
             UpdateInstallTask::Install {
                 prepared,
                 cancellation,
             } => install_gui_update(prepared, cancellation, progress)
-                .map(UpdateInstallOutcome::Installed)
-                .map_err(Into::into),
-            UpdateInstallTask::Relaunch(_) => Err(UpdateInstallFailure::stopped()),
-        }
+                .map(UpdateInstallOutcome::Installed),
+            UpdateInstallTask::Relaunch(_) => return Err(UpdateInstallFailure::stopped()),
+        };
+        update_install_outcome(result)
     }
 
     fn relaunch(&self, installed: &InstalledUpdate) -> Result<(), UpdateInstallFailure> {
@@ -156,6 +159,34 @@ impl UpdateInstallBackend for EnvironmentUpdateInstallBackend {
             diagnostic: format!("could not replace the running GUI with the installed GUI: {error}"),
             cancelled: false,
         })
+    }
+}
+
+fn update_install_outcome(
+    result: Result<UpdateInstallOutcome, UpdateInstallError>,
+) -> Result<UpdateInstallOutcome, UpdateInstallFailure> {
+    match result {
+        Err(UpdateInstallError::OwnershipRefused(ownership)) => {
+            Ok(UpdateInstallOutcome::Restricted {
+                ownership,
+                failure: None,
+            })
+        }
+        // An unowned executable with an incompatible layout is Unknown, just
+        // as in gui_update_ownership. Keep its repair advice and diagnostics.
+        Err(error @ UpdateInstallError::InitialPreflight(_)) => {
+            Ok(UpdateInstallOutcome::Restricted {
+                ownership: InstallationOwnership::Unknown,
+                failure: Some(error.into()),
+            })
+        }
+        Err(
+            error @ (UpdateInstallError::PackageState(_) | UpdateInstallError::OwnershipChanged(_)),
+        ) => Ok(UpdateInstallOutcome::Restricted {
+            ownership: InstallationOwnership::Unknown,
+            failure: Some(error.into()),
+        }),
+        result => result.map_err(Into::into),
     }
 }
 
@@ -200,7 +231,16 @@ impl UpdateInstallApplication {
         let offered = report.is_some_and(|report| report.update_available);
         self.presentation.check_channel_matches =
             offered.then(|| report.is_some_and(|report| Some(report.channel) == channel));
-        self.presentation.action = offered.then(|| {
+        let supported = report.is_some_and(|report| {
+            matches!(
+                report.installation_ownership,
+                InstallationOwnership::Bundle
+                    | InstallationOwnership::Package {
+                        family: PackageFamily::Dpkg | PackageFamily::Rpm
+                    }
+            )
+        });
+        self.presentation.action = (offered && supported).then(|| {
             SettingsAction::new(
                 if self.presentation.error.is_some() {
                     "Retry update"
@@ -366,6 +406,13 @@ impl UpdateInstallApplication {
             return Some((None, None));
         }
         match result {
+            Ok(UpdateInstallOutcome::Restricted { failure, .. }) => {
+                self.prepared = None;
+                self.clear_presentation();
+                if let Some(failure) = failure {
+                    return self.failed(failure);
+                }
+            }
             Ok(UpdateInstallOutcome::Prepared(prepared))
                 if matches!(operation.task(), UpdateInstallTask::Prepare { .. }) =>
             {
@@ -535,6 +582,7 @@ mod tests {
         app.complete_update_check(
             operation,
             Ok(UpdateCheckReport {
+                installation_ownership: crate::upgrade_preflight::InstallationOwnership::Bundle,
                 installed_version: "1.6.0".into(),
                 channel: UpdateChannel::Stable,
                 update_available: true,
@@ -551,6 +599,71 @@ mod tests {
             .update_install_operation()
             .unwrap()
             .clone()
+    }
+
+    #[test]
+    fn incompatible_bundle_layout_replaces_stale_offers_and_keeps_repair_details() {
+        use crate::upgrade_preflight::{CompatibilityFailure, CompatibilityReport};
+        for after_confirmation in [false, true] {
+            let mut app = offered();
+            let mut operation = prepare(&mut app);
+            if after_confirmation {
+                app.complete_update_install(
+                    &operation,
+                    Ok(UpdateInstallOutcome::Prepared(prepared())),
+                )
+                .unwrap();
+                operation = app
+                    .handle_intent(SettingsIntent::ConfirmUpdateInstall)
+                    .unwrap()
+                    .update_install_operation()
+                    .unwrap()
+                    .clone();
+            }
+            let report = CompatibilityReport::from_failures(vec![CompatibilityFailure {
+                check: "installed-layout",
+                path: Some("/etc/systemd/system/LG_Buddy.service".into()),
+                detail: "path is missing".into(),
+                remedy: "repair the release-bundle installation".into(),
+            }]);
+            // Use the production backend conversion, rather than injecting an
+            // already-restricted outcome which would miss the reported bug.
+            let result = update_install_outcome(Err(UpdateInstallError::InitialPreflight(report)));
+            let transition = app.complete_update_install(&operation, result).unwrap();
+
+            assert!(transition.update_install_operation().is_none());
+            let presentation = app.presentation();
+            assert_eq!(
+                presentation
+                    .update_check()
+                    .result()
+                    .unwrap()
+                    .installation_ownership,
+                InstallationOwnership::Unknown
+            );
+            let row = presentation.updater();
+            assert!(row.description().contains("could not verify"));
+            assert_eq!(row.action().intent(), SettingsIntent::CheckForUpdates);
+            assert!(row.action().enabled());
+            let failure = presentation.update_install().error().unwrap();
+            assert!(failure
+                .detail()
+                .contains("repair the release-bundle installation"));
+            assert!(presentation
+                .update_install()
+                .failure_details()
+                .unwrap()
+                .contains("/etc/systemd/system/LG_Buddy.service"));
+            assert!(transition.update_notice().is_some());
+            assert!(!app.is_mutating());
+            assert!(app
+                .handle_intent(SettingsIntent::PrepareUpdateInstall)
+                .is_none());
+            assert!(app
+                .handle_intent(SettingsIntent::ConfirmUpdateInstall)
+                .is_none());
+            assert!(app.handle_intent(SettingsIntent::CheckForUpdates).is_some());
+        }
     }
 
     #[test]

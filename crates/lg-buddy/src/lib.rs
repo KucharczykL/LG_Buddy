@@ -13,6 +13,7 @@ pub mod brightness;
 mod command;
 pub mod commands;
 pub mod config;
+pub mod debian_update;
 pub mod diagnostics;
 pub mod diagnostics_view;
 pub mod events;
@@ -20,6 +21,7 @@ pub mod inhibition;
 pub mod kwin_bridge;
 pub mod lifecycle;
 pub mod migration;
+mod native_update;
 pub mod navigation;
 pub mod notifications;
 pub mod overview;
@@ -29,6 +31,7 @@ pub mod platform_access_token;
 pub mod policy;
 pub mod presentation;
 pub mod release_bundle;
+pub mod rpm_update;
 pub mod runtime_phase;
 pub mod screen;
 pub mod session;
@@ -1148,7 +1151,12 @@ pub fn run_command<W: Write>(command: Command, writer: &mut W) -> Result<(), Run
     // TV operations require the current config, including before the user
     // daemon has had a chance to convert a stale saved profile.
     if requires_current_config(&command) {
-        let config_path = resolve_config_path_from_env().map_err(RunError::ConfigPath)?;
+        let config_path = if matches!(command, Command::NetworkManagerPreDown) {
+            config::resolve_machine_config_path_from_env()
+        } else {
+            resolve_config_path_from_env()
+        }
+        .map_err(RunError::ConfigPath)?;
         // Early-feedback stale gate: a stale 1.x/bscpylgtv config is a
         // read-only MigrationRequired failure before any runtime work. The
         // command handler re-reads via the loader to obtain the snapshot.

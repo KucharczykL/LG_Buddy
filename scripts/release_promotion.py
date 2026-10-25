@@ -187,6 +187,15 @@ def validate_release_identity(
     if target == "prerelease" and not version.prerelease:
         raise PromotionError(f"prerelease requires a prerelease version, found {version_text}")
 
+    # The builders reuse this module's SemVer parser; import their shared
+    # inventory only when validating a promotion, after module initialization.
+    from package_payload import PackageError
+    from release_assets import asset_names
+    try:
+        asset_names(version_text)
+    except PackageError as error:
+        raise PromotionError(f"release version cannot be packaged for Debian and RPM: {error}") from error
+
     for channel, current_ref in (
         ("main", current_main_ref),
         ("prerelease", current_prerelease_ref),

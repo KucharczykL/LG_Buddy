@@ -11,6 +11,10 @@ The intended ancestry is `main <= prerelease <= dev`. Ordinary changes merge
 into `dev`. An official release requires a promotion PR whose head is the
 same-repository `dev` branch and whose base is `main` or `prerelease`.
 
+The release workflow builds and verifies Debian and RPM packages from the same
+release bundle. Local build and test commands are in the
+[development guide](development.md#native-packages).
+
 ## Promotion contract
 
 The promotion PR is the code and release-identity review surface. Required checks
@@ -31,6 +35,8 @@ Required promotion checks prove that:
 - `Cargo.toml` and `Cargo.lock` declare the same `lg-buddy` version
 - a stable target has a stable SemVer and a prerelease target has a prerelease
   SemVer
+- the release version has an unambiguous Debian/RPM representation; unsupported
+  prerelease forms refuse promotion before merge
 - the version advances both existing release-channel heads
 - the persistent branches have not moved or diverged before merge
 - the derived `v<crate-version>` tag is absent before merge
@@ -53,16 +59,22 @@ There is no separate version input.
 4. Merge the promotion PR. This authorizes preparation of the release draft.
 5. The resulting push starts the serialized release workflow, which builds and
    smoke-tests the merged release commit without write credentials, including
-   an archive-driven upgrade from the pinned public baseline.
+   an archive-driven upgrade from the pinned public baseline. Ubuntu 24.04 and
+   Fedora 44 build the Debian and RPM packages from that same verified bundle.
+   Both run the real package lifecycle/startup smoke on those release bytes;
+   revision 2 is a private upgrade fixture and is not published. Assembly
+   verifies every format's metadata and embedded binary identities
+   before generating the complete checksum file and final workflow artifact.
 6. The staging job obtains a short-lived token from the dedicated repository-only
    GitHub App, aligns the remaining release streams, creates or resumes the exact
    release draft, uploads any missing assets, and verifies the complete asset set.
 7. Fill in the draft's release-specific notes and review its title, classification,
-   tag, and assets. Then approve the waiting `release-publication` environment.
+   tag, bundle, Debian package, RPM and checksum file. Then approve the waiting
+   `release-publication` environment.
    The approval does not accept an independent version, tag, commit, artifact, or
    workflow-run identifier.
 8. The publication job downloads the same workflow artifact again, revalidates the
-   merged refs, tag, checksums, manifest, draft classification, complete remote
+   merged refs, tag, checksums, bundle/native identities, draft classification, complete remote
    asset set, and non-placeholder notes, then makes only that draft public. It
    preserves the reviewed title and notes. Repository release immutability then
    locks the tag and assets.
@@ -71,6 +83,8 @@ There is no separate version input.
    cold-cache production update check, and the canary records sanitized GitHub
    response evidence for the deterministic mock. This is supplemental
    post-publication evidence, not a prerequisite for stable promotion.
+10. Every published release also runs the Ubuntu/Fedora native package canaries
+    and the pinned v1.8 bundle/startup migration check described below.
 
 Promotion through `prerelease` is optional. A direct `dev -> main` promotion
 runs the same required PR validation and post-merge release build as a
@@ -111,17 +125,124 @@ The workflow:
 5. Verifies the built and installed binary's exact version, channel, and commit.
 6. Upgrades a pinned real previous archive to the candidate and verifies
    preserved user state plus replaced owned integration files.
-7. Generates and verifies `sha256sums.txt`.
+7. Builds both native packages, verifies their identities, then generates and
+   verifies `sha256sums.txt` covering the bundle, Debian package and RPM.
 8. Keeps `main`, `prerelease`, and `dev` aligned for the next promotion.
 9. Stages and verifies the exact release assets privately.
 10. Waits for release-note review and explicit publication approval.
-11. Revalidates and publishes only the staged draft, preserving its reviewed
+11. Revalidates all four assets and publishes only the staged draft, preserving its reviewed
     title and notes.
-12. Downloads the published assets and verifies their checksums independently.
+12. Downloads the published assets and independently verifies their complete
+    inventory, checksums, native metadata and embedded identities.
 13. For prereleases, exercises production GitHub discovery, acquisition,
     confirmation, installation, and final identity from the pinned baseline.
+14. Exercises public native-package updates on Ubuntu/Fedora and a public
+    v1.8 bundle upgrade followed by installed GUI startup conversion.
 
 `install.sh` is only an installer. It does not build the runtime or GUI.
+
+## Native release assets
+
+Every new release contains exactly four assets. For `2.0.0-beta.3` they are:
+
+- `lg-buddy-2.0.0-beta.3-x86_64-unknown-linux-musl.tar.gz`
+- `lg-buddy_2.0.0-beta.3-1_amd64.deb`
+- `lg-buddy-2.0.0-beta.3-1.x86_64.rpm`
+- `sha256sums.txt`
+
+Native download filenames use upstream SemVer. Their embedded DEB/RPM version
+remains `2.0.0~beta.3-1`, preserving native prerelease ordering. Separating these
+forms avoids GitHub's [asset filename normalization](https://docs.github.com/en/rest/releases/assets#upload-a-release-asset),
+which rewrites `~` during upload.
+
+Official native releases support stable versions and `alpha`, `beta` or `rc`
+prereleases, optionally followed by `.N` and then `.ci`. Promotion refuses
+build metadata and forms whose Debian/RPM ordering could disagree with SemVer.
+Published packages use revision `1`; `--revision 2` is for local packaging-only
+upgrade tests and is installed manually. Both binaries retain the upstream
+version/channel/commit identity independently of that packaging revision.
+
+`scripts/release_assets.py` derives this inventory from the reviewed version.
+It rejects missing/unexpected assets and incomplete, duplicate or mismatched
+checksums. Non-installing native tools inspect package metadata and payloads;
+both executables and each package manifest must match the bundle's exact
+version, channel, target and commit. Verification never executes package
+scriptlets or candidate binaries. Fedora 44 provides RPM 6 decoding and Debian
+decoding for assembly, draft staging and publication.
+
+Draft resumption uploads only missing expected assets. Existing assets must
+match the local size and GitHub SHA-256 digest before publication. Published
+releases are verification-only. Package assets are downloaded independently
+after publication and checked against the same complete inventory. Historical
+releases retain their original assets; this workflow does not backfill them.
+
+PR CI runs the same complete assembly check against the real bundle and both
+native package artifacts. The required `bundle-smoke-test` includes that job.
+The response recorder's `--packages` option captures all four assets and their
+download responses; its default still supports historical bundle-only releases.
+
+## Public package and legacy canaries
+
+`production-native-canary` runs on Ubuntu 24.04 and Fedora 44 after both stable
+and prerelease publication. It selects an actual older published prerelease
+with the complete native asset set as test input. The installed application
+owns target discovery, confirmation, download, root revalidation and APT/DNF
+installation; the harness does not substitute release HTTP responses. It
+checks exact installed identity, native package verification, retained data,
+normal-user GTK handoff and a fresh public update check. Sanitized GitHub
+responses include all four assets. `result.json` records the baseline, target,
+package digest, actual journey and outcome.
+
+The first native release has no authentic older native package. Its canaries
+install and verify that public package, then record **bootstrap**, with the
+update journey explicitly unqualified. Bootstrap is not evidence of a passing
+package update. Later prereleases qualify beta-to-beta, and a stable publication
+qualifies prerelease-to-stable. Existing older native releases without an
+eligible complete prerelease baseline cause a failure rather than a false
+bootstrap result. Release review requires public results for both package
+families and both update journeys.
+
+`production-v1-bundle-canary` independently downloads the pinned published
+`v1.8.0` bundle and the published candidate. The candidate's public asset
+digests, checksum entries and identity are verified before use. The harness
+deploys the historical payload, seeds supported stale 1.x selectors, and runs
+the candidate bundle installer in an isolated prefix. Installation must preserve
+the stale settings and credential bytes/ownership/modes. The installed GTK
+application then converts them locally through its shared owner-only startup
+operation, without starting a daemon. Overview, brightness and installed-update
+handoff entries must all convert restored stale contents; a repeated start with
+current contents must not rewrite the file. Version/runtime probes stay read-only.
+There is no migration screen or acknowledgement.
+
+Canaries use disposable environments, passwordless sudo for native transactions,
+Xvfb/private session buses, synthetic retained credentials and no physical TV.
+The legacy check skips historical pip and service activation. Its converted and
+current GUI starts must show the same expected setup-required state because the
+isolated fixture has no running service; this is not service readiness evidence.
+These check public transport and product update journeys. Native desktop
+qualification also exercises actual system/user service managers, polkit
+cancellation/acceptance, installed GUI handoff, reboot and retained data in
+disposable Ubuntu/Fedora desktop VMs. Record the source commit, environment,
+package identities and results with the release PR or CI artifacts.
+PR CI runs the same v1.8 installer/GTK/startup harness against its v2 candidate
+bundle, alongside the retained v1.4 historical upgrade suite. No historical
+release is republished or modified by these checks.
+
+### Fedora automatic-update baseline transition
+
+Fedora 44+ is the RPM automatic-update baseline; see the
+[support policy](../README.md#distribution-support). The known beta.3/beta.4
+helpers cannot replay newer DNF plans. For those exact baseline tag/commit
+pairs and a later prerelease, the public canary verifies a manual RPM upgrade
+and records `manual-transition`, `automatic_upgrade_qualified=false`. It never
+converts arbitrary update failures or stable-release qualification to this
+outcome. Once a newer baseline containing the fixed updater exists, the normal
+automatic journey is required.
+
+Before stable promotion, complete Fedora 44 desktop authorization, service and
+reboot checks, plus an automatic upgrade between two published releases with
+the fixed updater. Container checks, manual transitions and the historical
+Fedora 43 desktop run do not complete these release checks.
 
 ## Release bundle identity
 
@@ -153,7 +274,7 @@ Smoke validation checks the manifest before executing installer code and then
 compares it with both the bundled and installed binary. Publishing validates
 the manifest directly from each archive without extracting or executing archive
 content. CI builds on Ubuntu 24.04, establishing GTK 4.14, libadwaita 1.5, and
-a maximum GLIBC 2.39 symbol baseline. Fedora 43 and current Arch lanes install
+a maximum GLIBC 2.39 symbol baseline. Fedora 44 and current Arch lanes install
 and launch the same artifact under Xvfb, drive it without a pointer, inspect its
 AT-SPI tree, and compare its light/dark and 1x/2x rendering; Ubuntu remains the
 ABI baseline.
@@ -175,6 +296,12 @@ User service checks follow an absolute `XDG_CONFIG_HOME`, falling back to
 `~/.config` otherwise, as the installer and setup flow do. Setup helper and
 polkit destinations may be absent on older installations; the preflight checks
 that they can be safely created or replaced and requires their candidate payloads.
+The machine binding is `/etc/lg-buddy/config-path`; only its absence permits
+migration input from `/usr/lib/lg-buddy/config-path`. Preflight checks the new
+binding destination and the user's discovery record before installation. Bundle
+upgrades atomically seed the new binding before replacing the runtime, retaining
+the legacy record for recovery. Ordinary GUI/CLI config discovery stays within
+the invoking user's configuration home, including custom paths remembered there.
 
 The installed GUI uses the same compatibility checks with its own installed
 executable path; a source checkout or externally managed GUI cannot substitute

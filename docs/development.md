@@ -11,7 +11,7 @@ Compiling the Rust runtime requires:
 
 Compiling and testing the GTK frontend additionally requires:
 
-- GTK 4.10 or newer development files
+- GTK 4.14 or newer development files
 - libadwaita 1.5 or newer development files
 - `pkg-config`
 - `glib-compile-resources` (provided by the GLib development tools)
@@ -134,6 +134,10 @@ The resulting binary will be at:
 
 ## Install a Locally Built Binary
 
+The installer below is for release-bundle layouts. For `.deb` and `.rpm`
+builds, use [Native packages](#native-packages). Package-managed first-run setup
+and configuration bindings are described in [onboarding](onboarding.md#package-owned-service-assets).
+
 `install.sh` is installer-only. It does not build the runtime or GUI.
 
 To install binaries you built yourself:
@@ -149,6 +153,109 @@ To install from a release bundle instead, extract the archive and run:
 ```bash
 ./install.sh
 ```
+
+Before changing anything, the bundle installer checks its complete system write
+and removal plan with the candidate runtime's private `installer-preflight`
+command. It queries each destination through the shared package database and
+uses filesystem mount facts to reject read-only targets. Owned or conflicting
+paths and unavailable ownership information all refuse installation with a
+path-specific error. Recursive cleanup and copied KWin payload members are
+included, even when the destination does not exist yet.
+Legacy service enablement and alias links are collected before preflight and
+only those checked links are removed during cleanup.
+
+This check runs before dependency installation, temporary installation files,
+user config/selection writes, or service changes. The authorized graphical
+upgrade helper repeats it before system mutations. A preflight refusal leaves
+the installation and user state unchanged; a later I/O failure still follows
+the existing partial-upgrade recovery contract. Existing shared directories
+are reused without changing their modes.
+
+## Native packages
+
+Both builders stage the same verified release bundle, including its exact
+runtime/GUI identity and optional desktop integration assets. They validate
+archive paths, types and metadata without running archive scripts. Build on
+the appropriate baseline so native dependency metadata matches that system:
+
+- **Ubuntu 24.04:** `python3`, `dpkg-dev`, `libgtk-4-1` and `libadwaita-1-0`.
+- **Fedora 44:** `python3` and `rpm-build`.
+
+Set `SOURCE_DATE_EPOCH` to the release source commit's Unix timestamp. Run the
+appropriate command against the bundle built from that commit:
+
+```bash
+# Ubuntu
+python3 scripts/build_debian_package.py \
+  --archive dist/lg-buddy-2.0.0-beta.4-x86_64-unknown-linux-musl.tar.gz \
+  --source-date-epoch "$SOURCE_DATE_EPOCH" --output-dir dist
+
+# Fedora
+python3 scripts/build_rpm_package.py \
+  --archive dist/lg-buddy-2.0.0-beta.4-x86_64-unknown-linux-musl.tar.gz \
+  --source-date-epoch "$SOURCE_DATE_EPOCH" --output-dir dist
+```
+
+Repeating a build with identical input, tools, dependency database and timestamp
+must produce identical bytes. Both recipes derive library dependencies from
+the binaries and declare the GTK/libadwaita minimums in the
+[README](../README.md#before-you-install). Python is a build/test dependency.
+Native version ordering, filenames and official packaging revisions are
+described in [release assets](release-process.md#native-release-assets).
+
+Package scripts install payload noninteractively and may reload the machine
+unit database. They never activate services, scan homes, pair a TV, convert
+settings, restart the TV lifecycle oneshot or launch UI. The installed
+application's [onboarding flow](onboarding.md#package-owned-service-assets) owns
+activation and dynamic bindings. Packages must not claim profiles, credentials
+or dynamic drop-ins, even through DEB conffiles or RPM ghost entries.
+Upgrades preserve activation policy; removal retains configuration and user
+data. See the [user guide](user-guide.md#uninstall) for removal/reset procedures
+and [architecture](architecture-overview.md#native-package-updates) for ownership
+and privileged update boundaries.
+
+### Package tests
+
+Run the payload and native version-ordering tests without root:
+
+```bash
+python3 scripts/test_build_debian_package.py
+python3 scripts/test_build_rpm_package.py
+```
+
+Native ordering checks additionally need `dpkg` or Fedora's `python3-rpm`.
+CI builds each package twice and runs its lifecycle with real package tools.
+For local lifecycle checks, build revisions 1 and 2 (`--revision 2`) and run
+these commands **only inside a disposable Ubuntu/Fedora container** with root,
+Docker and the explicit test flag:
+
+```bash
+LG_BUDDY_DISPOSABLE_PACKAGE_TEST=1 bash scripts/test-debian-package.sh \
+  /packages/lg-buddy_2.0.0-beta.4-1_amd64.deb \
+  /packages/lg-buddy_2.0.0-beta.4-2_amd64.deb
+
+LG_BUDDY_DISPOSABLE_PACKAGE_TEST=1 bash scripts/test-rpm-package.sh \
+  /packages/lg-buddy-2.0.0-beta.4-1.x86_64.rpm \
+  /packages/lg-buddy-2.0.0-beta.4-2.x86_64.rpm
+```
+
+The suites check conflicts, install, upgrade/reinstall, ownership and payload
+verification, GTK launch, owner-only startup conversion, and retained data
+through removal. Package operations must leave current/stale profiles and
+credentials unchanged; conversion belongs to the installed GUI/user daemon.
+
+`scripts/test-debian-update.py` also exercises installed APT and DNF updates,
+including root digest refusal, declined confirmation, retained data and
+normal-user GUI handoff. CI supplies the debug transport fixtures and candidate
+package. Fedora 44 uses `--expect-new-rpm-dependency libglvnd-gles` to cover new
+dependencies and checks signed, unsigned, tampered and symlink dependency RPMs.
+Fedora 43 uses `--expect-unsupported-rpm-platform` to require refusal before HTTP
+or mutation. See the native jobs in [CI](../.github/workflows/ci.yml) for setup.
+
+These fixtures substitute HTTP transport and authorization. Public release
+updates and real desktop authorization/service/reboot checks belong to the
+[release process](release-process.md#public-package-and-legacy-canaries).
+Record test-run results in CI artifacts or the PR.
 
 ## Validation
 
@@ -172,11 +279,18 @@ The GUI launch checks cover both no-argument normal Overview launch and the
 brightness deep link, including focus handoff from another view. Installed
 smoke keeps the desktop entry, runtime, and GUI together.
 
-PR CI runs verification and the KWin checks first, then builds the candidate
-bundle and GUI journey fixtures once. Ubuntu bundle checks and Fedora/Arch
-checks consume those artifacts in parallel. The required `bundle-smoke-test`
-check also fails if artifact production fails or is skipped. No installed or
-cross-version checks are omitted.
+PR CI runs verification and the KWin checks first. Verification builds GUI
+journey fixtures using its existing GNU debug dependency graph; the bundle job
+builds only the optimized runtime and GUI. Ubuntu runs the release-bundle,
+installed GUI, historical upgrade and v1.8 startup-migration suites in separate
+matrix jobs, each with a
+20-minute limit. Those jobs and Fedora/Arch checks consume the same artifacts
+in parallel. The required `bundle-smoke-test` check passes only when artifact
+production, every Ubuntu smoke suite, native package jobs, DNF dependency and
+Fedora 43 refusal checks, and complete
+release-asset assembly succeed;
+failures, timeouts, and skipped
+jobs fail the check.
 
 The root ownership checks execute the library test binary that Cargo already
 built for the ordinary suite. The TV fixture shares the GNU debug build and
@@ -313,10 +427,15 @@ with:
 python3 scripts/test_publish_release_assets.py
 ```
 
-Dry-run the GitHub release draft-staging step with:
+After building both native packages from the same release bundle on their
+supported baselines, generate and verify the complete asset set on Fedora 44
+with `dpkg`, `rpm` and Python installed. Supply the exact binary source commit
+and a supported release version; the helper refuses mismatched identities.
+The publisher dry run performs these checks without writing to GitHub:
 
 ```bash
-GH_RELEASE_DRY_RUN=1 ./scripts/publish-release-assets.sh stage-draft --dist-dir ./dist --tag v<version>
+python3 scripts/release_assets.py --dist-dir ./dist --tag "v$RELEASE_VERSION" --commit "$RELEASE_COMMIT" --write-checksums
+GH_RELEASE_DRY_RUN=1 ./scripts/publish-release-assets.sh stage-draft --dist-dir ./dist --tag "v$RELEASE_VERSION" --commit "$RELEASE_COMMIT"
 ```
 
 Official releases are created only through a reviewed `dev` promotion PR. For

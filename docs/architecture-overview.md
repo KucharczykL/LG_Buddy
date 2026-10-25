@@ -511,6 +511,15 @@ latest release metadata, and last-notified release state used by the observable
 update notification policy; that cache is not user configuration and is not
 part of the settings API.
 
+CLI and GUI update installation share a package-ownership gate before release
+discovery and on the installed-state recheck after acquisition. The fallible
+package database classifies the installed runtime; only an unowned executable
+with a compatible bundle layout can enter the bundle installer. Package-owned
+installs name their package manager, while conflicting or unavailable ownership
+refuses without guessing. The GUI carries ownership in its update-check report
+and offers further checks with package guidance instead of an install action.
+Package-manager installation dispatch is deferred to the Debian/RPM work.
+
 The installer supplies the matching runtime and GTK executable together, checks
 GTK/libadwaita versions, and offers to install missing runtime packages before
 proceeding. The no-argument `lg-buddy` command locates `lg-buddy-gui` beside the
@@ -649,6 +658,46 @@ These checks are a conservative, evolving safety boundary, not an exhaustive
 host-support declaration or a promise that no later privileged operation can
 fail. New observable checks can be added as real installations expose unsafe
 conditions; callers only consume the structured compatibility result.
+
+### Native package updates
+
+The shared package database determines ownership from native database queries.
+A missing file is not proof that a destination is unowned. Conflicting owners,
+probe failures and malformed results block mutation. Application writes require
+both an unowned destination and safe paths, types, permissions and mounts;
+shared vendor-owned directories may be traversed without changing their modes.
+
+APT/DNF own the binaries, templates and vendor integration files in a package
+installation. Setup verifies those files and writes only dynamic bindings;
+missing, modified or shadowed vendor assets need package repair. The paths and
+activation rules are in [onboarding](onboarding.md#package-owned-service-assets).
+KWin's loader-required artifact copy uses its own guarded unowned destination,
+as described in [KWin integration](kwin-integration.md).
+
+The updater observes installation ownership before discovery and after
+acquisition. A healthy LG Buddy package selects its matching `.deb` or `.rpm`;
+unsupported owners or uncertain state refuse installation. The installed root
+helper independently revalidates the official release and digest, stages the
+verified bytes, and runs fixed package-manager commands with a clean environment.
+Caller-selected paths or commands cannot authorize privileged work. APT refuses
+removals, downgrades, held-package changes and unauthenticated dependencies.
+
+DNF5 first stores a transaction. Its validator requires the exact verified
+local LG Buddy upgrade and permits dependency installs and same-package
+upgrades/replacements, while refusing removals, downgrades and foreign replacements.
+It accepts original repository IDs and one `@stored_transaction(repo_id)`
+wrapper introduced by [DNF's repository fix](https://github.com/rpm-software-management/dnf5/pull/2461).
+Nested/malformed wrappers, wrapped local dependencies and wrapped `@System`
+replacements remain refused. Because stored dependencies are treated as local
+RPMs, the helper verifies their signatures and digests with `rpmkeys --checksig`,
+`_pkgverify_level all` and `_pkgverify_flags 0x0` against the existing system
+keyring. It never imports keys or bypasses DNF locks or GPG policy. The exact LG
+Buddy RPM has its separate verified GitHub release/digest boundary.
+
+The Fedora platform check runs before downloads/authorization and independently
+in the privileged helper. See the [support policy](../README.md#distribution-support)
+for baselines. After mutation, native version, ownership and both embedded
+binary identities must match before relaunching GTK as the invoking user.
 
 ## Core Control Flows
 

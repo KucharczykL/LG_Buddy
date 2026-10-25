@@ -766,6 +766,12 @@ fn screen_idle_blank_enabled_from_config() -> Result<bool, SessionRunnerError> {
     let config_path = match resolve_config_path_from_env() {
         Ok(path) => path,
         Err(ConfigPathError::NotConfigured) => return Ok(true),
+        Err(error) => {
+            return Err(SessionRunnerError::Failed {
+                backend: ScreenBackend::Auto,
+                message: error.to_string(),
+            })
+        }
     };
     let contents = fs::read_to_string(&config_path).map_err(|err| SessionRunnerError::Failed {
         backend: ScreenBackend::Auto,
@@ -944,6 +950,12 @@ where
             ))
         }
         Err(ConfigPathError::NotConfigured) => None,
+        Err(error) => {
+            return Err(SessionRunnerError::Failed {
+                backend,
+                message: error.to_string(),
+            })
+        }
     };
     run_native_session_monitor_with_lock_monitor(
         writer,

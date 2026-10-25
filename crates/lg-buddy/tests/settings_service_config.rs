@@ -128,7 +128,7 @@ fn gui_idle_activation_uses_the_service_config_before_persisting() {
     let other = config.path().with_file_name("other.env");
     fs::write(&other, "").unwrap();
     let root = config.path().parent().unwrap().join("installed");
-    let pointer = root.join("usr/lib/lg-buddy/config-path");
+    let pointer = root.join("etc/lg-buddy/config-path");
     let calls = config.path().with_extension("calls");
     let systemctl = ExecutableScript::new(
         "activation-systemctl",
