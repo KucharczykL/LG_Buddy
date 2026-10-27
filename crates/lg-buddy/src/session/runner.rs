@@ -17,9 +17,8 @@ use crate::backend::{
     BackendProbe, BackendResolution, BackendSelectionError, SystemBackendProbe,
 };
 use crate::config::{
-    load_config, load_current_config, normalize_idle_timeout_secs, parse_config_entries,
-    parse_idle_timeout_secs, resolve_config_path_from_env, ConfigPathError, ScreenBackend,
-    ScreenIdleBlankPolicy, DEFAULT_IDLE_TIMEOUT,
+    load_config, load_current_config, normalize_idle_timeout_secs, parse_idle_timeout_secs,
+    resolve_config_path_from_env, ConfigPathError, ScreenBackend, DEFAULT_IDLE_TIMEOUT,
 };
 use crate::events::{EventSource, RuntimeEvent};
 use crate::inhibition::Inhibition;
@@ -780,13 +779,20 @@ fn screen_idle_blank_enabled_from_config() -> Result<bool, SessionRunnerError> {
             config_path.display()
         ),
     })?;
-    let entries = parse_config_entries(&contents);
-    let policy = entries
-        .get("screen_idle_blank")
-        .and_then(|value| value.parse::<ScreenIdleBlankPolicy>().ok())
-        .unwrap_or(ScreenIdleBlankPolicy::Enabled);
-
-    Ok(policy.is_enabled())
+    let policy = crate::settings::SettingsStore::from_reader_with_declarations(
+        crate::settings::ConfigEnvReader::parse(&config_path, &contents),
+    )
+    .and_then(|store| store.effective_by_name("screen.idle_blank"))
+    .map_err(|err| SessionRunnerError::Failed {
+        backend: ScreenBackend::Auto,
+        message: err.to_string(),
+    })?;
+    // Retain the existing enabled fallback for an invalid saved preference;
+    // invalid declarations fail at load instead of bypassing management.
+    Ok(policy
+        .value()
+        .and_then(crate::settings::SettingValue::as_enum)
+        != Some("disabled"))
 }
 
 fn run_passive_session_agent<W: Write>(_writer: &mut W) -> Result<(), SessionRunnerError> {
@@ -941,7 +947,7 @@ where
             })?;
             Some(Inhibition::new(
                 &current.config,
-                Duration::from_millis(resolve_idle_timeout_ms()),
+                Duration::from_millis(resolve_idle_timeout_ms()?),
                 vec![Arc::new(GnomeInhibition::default())],
                 vec![
                     Box::new(PowerDevilInhibition::default()),
@@ -993,7 +999,7 @@ where
     L: FnOnce(mpsc::Sender<RunnerMessage>) -> Option<LogindLockObserver>,
     D: FnOnce(mpsc::Sender<RunnerMessage>) -> Option<DpmsBlankObserver>,
 {
-    let blank_after = Duration::from_millis(resolve_idle_timeout_ms());
+    let blank_after = Duration::from_millis(resolve_idle_timeout_ms()?);
     let power_off_after = resolve_timed_power_off_after();
     let started_at = Instant::now();
     let marker_exists = session_screen_ownership_marker_exists(backend)?;
@@ -1211,20 +1217,44 @@ where
     Ok(())
 }
 
-fn resolve_idle_timeout_secs() -> u64 {
-    normalize_idle_timeout_secs(
-        std::env::var("LG_BUDDY_IDLE_TIMEOUT")
-            .ok()
-            .and_then(|value| parse_idle_timeout_secs(&value))
+fn resolve_idle_timeout_secs() -> Result<u64, SessionRunnerError> {
+    let path = resolve_config_path_from_env().ok();
+    resolve_idle_timeout_from_sources(
+        std::env::var("LG_BUDDY_IDLE_TIMEOUT").ok().as_deref(),
+        path.as_deref(),
+    )
+}
+
+fn resolve_idle_timeout_from_sources(
+    override_value: Option<&str>,
+    path: Option<&Path>,
+) -> Result<u64, SessionRunnerError> {
+    if let Some(path) = path {
+        let declarations =
+            crate::config::declarative::Declarations::load(path).map_err(|error| {
+                SessionRunnerError::Failed {
+                    backend: ScreenBackend::Auto,
+                    message: error.to_string(),
+                }
+            })?;
+        if let Some(value) = declarations
+            .and_then(|d| d.value("screen.idle_timeout"))
+            .and_then(crate::settings::SettingValue::as_integer)
+        {
+            return Ok(value as u64);
+        }
+    }
+    Ok(normalize_idle_timeout_secs(
+        override_value
+            .and_then(parse_idle_timeout_secs)
             .or_else(|| {
-                let path = resolve_config_path_from_env().ok()?;
-                load_config(&path)
+                load_config(path?)
                     .ok()
                     .map(|config| config.screen_idle_timeout)
             })
             .map(u128::from)
             .unwrap_or(u128::from(DEFAULT_IDLE_TIMEOUT)),
-    )
+    ))
 }
 
 fn session_screen_ownership_marker_exists(
@@ -1238,8 +1268,47 @@ fn session_screen_ownership_marker_exists(
         })
 }
 
-fn resolve_idle_timeout_ms() -> u64 {
-    resolve_idle_timeout_secs().saturating_mul(1000)
+fn resolve_idle_timeout_ms() -> Result<u64, SessionRunnerError> {
+    Ok(resolve_idle_timeout_secs()?.saturating_mul(1000))
+}
+
+#[cfg(test)]
+mod declarative_timeout_tests {
+    use super::*;
+    #[test]
+    fn declared_timeout_wins_over_environment_and_bad_declarations_do_not_fall_back() {
+        let path = std::env::temp_dir().join(format!(
+            "lg-buddy-declared-timeout-{}-{}.env",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path,"tvs_primary_ip=192.0.2.1\ntvs_primary_mac=02:00:00:00:00:01\ntvs_primary_input=HDMI_1\ntvs_primary_platform=lg_webos\nscreen_idle_timeout=600\n").unwrap();
+        let binding = crate::config::declarative::binding_path(&path).unwrap();
+        std::fs::write(
+            &binding,
+            r#"{"version":1,"settings":{"screen.idle_timeout":300}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_idle_timeout_from_sources(Some("450"), Some(&path)).unwrap(),
+            300
+        );
+        std::fs::write(&binding, "{incomplete").unwrap();
+        assert!(resolve_idle_timeout_from_sources(Some("450"), Some(&path)).is_err());
+        std::fs::remove_file(binding).unwrap();
+        assert_eq!(
+            resolve_idle_timeout_from_sources(Some("450"), Some(&path)).unwrap(),
+            450
+        );
+        assert_eq!(
+            resolve_idle_timeout_from_sources(None, Some(&path)).unwrap(),
+            600
+        );
+        std::fs::remove_file(path).unwrap();
+    }
 }
 
 fn resolve_timed_power_off_after() -> Duration {
