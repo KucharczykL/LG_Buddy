@@ -673,7 +673,7 @@ mod tests {
     }
 
     #[test]
-    fn get_input_failure_falls_back_to_power_off() {
+    fn get_input_failure_skips_without_powering_off() {
         let temp_dir = TestDir::new("screen-off-get-input-failure");
         let marker = ScreenOwnershipMarker::new(temp_dir.path().to_path_buf());
         let mock = FakeTvClient::new("screen-off-get-input-failure-tv");
@@ -687,13 +687,14 @@ mod tests {
             &marker,
             &client,
         )
-        .expect("screen-off fallback should succeed");
+        .expect("input query failure should skip safely");
 
-        assert!(marker.exists());
-        assert_call_commands(&mock, &["current_input", "power_off"]);
+        assert!(!marker.exists());
+        assert_call_commands(&mock, &["current_input"]);
         let rendered = rendered(&output);
-        assert!(rendered.contains("Could not query TV input."));
-        assert!(rendered.contains("Fallback power_off succeeded."));
+        assert!(rendered.contains("Could not query TV input"));
+        assert!(rendered.contains("without a blind fallback"));
+        assert!(!rendered.contains("power_off"));
     }
 
     #[test]

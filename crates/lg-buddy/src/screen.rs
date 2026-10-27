@@ -143,12 +143,6 @@ enum TvEffectObservation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ScreenOffFallbackContext {
-    InputQueryFailed,
-    BlankFailed,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ScreenOnNext {
     Unblank,
     FullWake,
@@ -376,26 +370,15 @@ pub(crate) fn run_screen_off_with_result_for_event<
             }
         }
         Err(err) => {
-            let detail = err.to_string();
             let decision = decide_screen_off_after_input(
                 config.input,
-                ScreenOffInputObservation::QueryFailed(detail.clone()),
+                ScreenOffInputObservation::QueryFailed(err.to_string()),
             );
             writeln!(
                 writer,
-                "LG Buddy Screen Off: Could not query TV input. Falling back to power_off. {err}"
+                "LG Buddy Screen Off: Could not query TV input; skipping screen-off without a blind fallback. {err}"
             )?;
-            let next = decision.next;
             outcome.merge(decision.outcome);
-            if next == ScreenOffNext::PowerOffFallback {
-                execute_screen_off_power_off_fallback(
-                    writer,
-                    marker,
-                    &tv,
-                    ScreenOffFallbackContext::InputQueryFailed,
-                    &mut outcome,
-                )?;
-            }
         }
     }
 
@@ -769,13 +752,13 @@ fn decide_screen_off_after_input(
                 .with_state_transition(clear_session_marker(TransitionReasonCode::InputMismatch)),
         ),
         ScreenOffInputObservation::QueryFailed(detail) => ScreenPolicyDecision::with_outcome(
-            ScreenOffNext::PowerOffFallback,
+            ScreenOffNext::Stop,
             PolicyOutcome::new()
                 .with_diagnostic(Diagnostic::warning(format!("input query failed: {detail}")))
-                .with_action(
-                    ActionKind::TvPowerOffFallback,
-                    DecisionReason::new(DecisionReasonCode::TransportFailure),
-                ),
+                .with_no_action(DecisionReason::with_detail(
+                    DecisionReasonCode::TransportFailure,
+                    detail,
+                )),
         ),
     }
 }
@@ -1022,13 +1005,7 @@ fn execute_screen_blank<W: Write, C: TvClient>(
     let next = decision.next;
     outcome.merge(decision.outcome);
     if next == ScreenOffNext::PowerOffFallback {
-        execute_screen_off_power_off_fallback(
-            writer,
-            marker,
-            tv,
-            ScreenOffFallbackContext::BlankFailed,
-            outcome,
-        )?;
+        execute_screen_off_power_off_fallback(writer, marker, tv, outcome)?;
     }
 
     Ok(blank_succeeded)
@@ -1038,7 +1015,6 @@ fn execute_screen_off_power_off_fallback<W: Write, C: TvClient>(
     writer: &mut W,
     marker: &ScreenOwnershipMarker,
     tv: &TvDevice<'_, C>,
-    context: ScreenOffFallbackContext,
     outcome: &mut PolicyOutcome,
 ) -> Result<(), RunError> {
     let observation = match tv.power().off() {
@@ -1052,15 +1028,10 @@ fn execute_screen_off_power_off_fallback<W: Write, C: TvClient>(
         TvEffectObservation::Succeeded => {
             writeln!(writer, "LG Buddy Screen Off: Fallback power_off succeeded.")?;
         }
-        TvEffectObservation::Failed(detail) => match context {
-            ScreenOffFallbackContext::InputQueryFailed => writeln!(
-                writer,
-                "LG Buddy Screen Off: Could not power off the TV (may already be off or unreachable). {detail}"
-            )?,
-            ScreenOffFallbackContext::BlankFailed => {
-                writeln!(writer, "LG Buddy Screen Off: Fallback power_off failed. {detail}")?
-            }
-        },
+        TvEffectObservation::Failed(detail) => writeln!(
+            writer,
+            "LG Buddy Screen Off: Fallback power_off failed. {detail}"
+        )?,
     }
 
     outcome.merge(decision.outcome);
@@ -1490,6 +1461,19 @@ mod tests {
                 TransitionReason::new(TransitionReasonCode::InputMismatch),
             )]
         );
+
+        let query_failed = decide_screen_off_after_input(
+            HdmiInput::Hdmi2,
+            ScreenOffInputObservation::QueryFailed("handshake interrupted".to_string()),
+        );
+
+        assert_eq!(query_failed.next, ScreenOffNext::Stop);
+        assert!(query_failed.outcome.actions.is_empty());
+        assert_eq!(
+            query_failed.outcome.no_actions[0].reason.code,
+            DecisionReasonCode::TransportFailure
+        );
+        assert!(query_failed.outcome.state_transitions.is_empty());
     }
 
     #[test]

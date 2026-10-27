@@ -721,6 +721,10 @@ Flow:
 7. If another input is active:
    - clear the marker
    - do nothing to the TV
+8. If the input query fails, record a no-action decision and do not touch the
+   TV. The failure says nothing about ownership: a TV that is still booting or
+   powering off answers no input, and a blind `power_off` there turns off a
+   screen the user is about to use.
 
 After a successful automatic blank, the inactivity engine starts a fixed
 five-minute grace period. Activity cancels it before restore. At expiry,
@@ -907,8 +911,8 @@ session reconnects on demand; there is no background connection maintenance.
 
 If an input query invalidates a reused session, the adapter retries that read
 once on a fresh connection before returning a failure to policy. This prevents
-a socket closed between events from triggering the screen-off fallback without
-checking the TV's current input. Fresh-session failures return normally, and
+a socket closed between events from skipping screen-off without checking the
+TV's current input. Fresh-session failures return normally, and
 effectful operations are never replayed by this recovery path.
 
 Native picture settings have two known service-invocation paths. A direct SSAP
