@@ -1000,6 +1000,12 @@ fn update_check_notice(
     result: &Result<UpdateCheckReport, UpdateCheckError>,
 ) -> Option<UpdateNotice> {
     match result {
+        Ok(report) if report.installation_ownership.externally_updated() => {
+            Some(UpdateNotice::new(
+                "Managed externally",
+                crate::update_install::update_install_guidance(report.installation_ownership),
+            ))
+        }
         Ok(report) => {
             if !report.update_available {
                 Some(UpdateNotice::new(

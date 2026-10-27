@@ -438,10 +438,12 @@ mod tests {
 #[cfg(test)]
 mod external_snapshot_tests {
     use crate::presentation::settings::SettingsPresentation;
+    use crate::presentation::update_check::UpdateCheckReport;
     use crate::settings::ConfigEnvReader;
     use crate::settings_view::{
         BehaviorSetting, SettingsApplication, SettingsIntent, SettingsReadSnapshot,
     };
+    use crate::updates::UpdateChannel;
     use crate::upgrade_preflight::InstallationOwnership;
 
     fn snapshot(owner: InstallationOwnership) -> SettingsReadSnapshot {
@@ -494,5 +496,36 @@ mod external_snapshot_tests {
             .presentation()
             .row_visible(BehaviorSetting::UpdatesChannel));
         assert!(app.presentation().updater().action().enabled());
+    }
+
+    #[test]
+    fn check_discovering_external_ownership_reports_guidance_instead_of_up_to_date() {
+        let (mut app, opening) = SettingsApplication::open();
+        app.complete_snapshot(
+            opening.read_operation().unwrap(),
+            Ok(snapshot(InstallationOwnership::Bundle)),
+        )
+        .unwrap();
+        let checking = app.handle_intent(SettingsIntent::CheckForUpdates).unwrap();
+        let completed = app
+            .complete_update_check(
+                checking.update_check_operation().unwrap(),
+                Ok(UpdateCheckReport {
+                    installation_ownership: InstallationOwnership::NixStore,
+                    installed_version: "2.0.0".into(),
+                    channel: UpdateChannel::Prerelease,
+                    update_available: false,
+                    warning: None,
+                }),
+            )
+            .unwrap();
+        let notice = completed.update_notice().unwrap();
+        assert_eq!(notice.title(), "Managed externally");
+        assert!(notice.details().unwrap().contains("rebuild and activate"));
+        assert!(!app.presentation().updater().action().enabled());
+        assert!(app.handle_intent(SettingsIntent::CheckForUpdates).is_none());
+        assert!(app
+            .handle_intent(SettingsIntent::PrepareUpdateInstall)
+            .is_none());
     }
 }
