@@ -899,6 +899,20 @@ may reconnect for safe read-only verification, but it never replays the
 effectful operation. The adapter does not expose webOS power states to policy
 code.
 
+A power-state answer is settled only when it names no `processing` change.
+While powering off, a TV keeps answering `Active` with `processing` set to
+`Request Power Off`, then `Prepare Active Standby`, for about three seconds;
+powering on reports its old state with `Prepare Power On` and `Screen On`.
+Before blanking, unblanking, switching input or powering off, and in every
+postcondition check, the adapter reads the power state every 250 ms until it
+settles, and refuses the operation after 15 seconds. An unblank finds a TV
+settled in a standby state not visible without sending `turnScreenOn`, so
+restoration goes straight to the full wake. After its own power-off the adapter
+opens no new connection for 20 seconds (`LG_BUDDY_POWER_OFF_QUIET_SECS`): the
+TV keeps shutting down after it stops answering, and a wake inside that window
+once left a TV that answered neither the network nor a short press of its
+power button.
+
 Each monitor's `RuntimeActionExecutor` retains this adapter across compatible
 events. Client construction and connection remain lazy: starting a monitor
 does not contact the TV. The owner reloads configuration for every action and
