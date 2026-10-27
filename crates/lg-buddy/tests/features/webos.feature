@@ -160,7 +160,7 @@ Feature: Native webOS TV platform
     And stdout contains "Screen visibility could not be verified. Falling back to full wake."
     And stdout does not contain "Screen unblank failed."
     And stdout contains "LG Buddy Screen Restore Failure Context:"
-    And stdout contains "operations: direct_unblank=failed kind=screen_not_visible"
+    And stdout contains "operations: direct_unblank=failed kind=transport"
     And stdout contains "input_attempt_1=failed kind=screen_not_visible"
     And stdout contains "recovery_unblank_1=succeeded"
     And stdout contains "input_retry_1=succeeded"

@@ -31,7 +31,7 @@ pub use picture::{
     WebOsBacklightBrightness, WebOsBacklightBrightnessError, WebOsBacklightBrightnessValueError,
     WebOsSetBacklightBrightnessError,
 };
-pub use power::{WebOsPowerState, WebOsPowerStateError};
+pub use power::{WebOsPowerReading, WebOsPowerState, WebOsPowerStateError};
 pub use screen::WebOsScreenControlError;
 pub use system_info::WebOsModelNameError;
 

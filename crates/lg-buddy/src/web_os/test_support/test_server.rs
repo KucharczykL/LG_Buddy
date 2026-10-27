@@ -146,11 +146,20 @@ pub(crate) struct WebOsTestTvSnapshot {
 struct WebOsTestTv {
     version: WebOsTestVersion,
     power_state: WebOsPowerState,
+    power_change: Option<WebOsTestPowerChange>,
     input: WebOsTestInput,
     backlight: Value,
     volume: i16,
     muted: bool,
     pending_luna_backlight: Option<(u64, bool)>,
+}
+
+/// A power change in progress: `reads` more power-state answers name
+/// `processing`, then the state becomes `settles_to`.
+struct WebOsTestPowerChange {
+    processing: String,
+    reads: u32,
+    settles_to: WebOsPowerState,
 }
 
 #[derive(Default)]
@@ -164,6 +173,7 @@ impl WebOsTestTv {
         Self {
             version,
             power_state,
+            power_change: None,
             input,
             backlight: input.backlight(),
             volume: 20,
@@ -203,13 +213,21 @@ impl WebOsTestTv {
                 require_top_level_permission(permissions, "READ_POWER_STATE", uri);
                 assert_eq!(payload, &json!({}));
                 assert_ne!(self.power_state, WebOsPowerState::PowerOff);
-                response(
-                    request_id,
-                    json!({
-                        "returnValue": true,
-                        "state": self.power_state.to_string(),
-                    }),
-                )
+                let mut payload = json!({
+                    "returnValue": true,
+                    "state": self.power_state.to_string(),
+                });
+                if let Some(change) = self.power_change.as_mut() {
+                    if change.reads == 0 {
+                        self.power_state = change.settles_to.clone();
+                        self.power_change = None;
+                        payload["state"] = json!(self.power_state.to_string());
+                    } else {
+                        change.reads -= 1;
+                        payload["processing"] = json!(change.processing);
+                    }
+                }
+                response(request_id, payload)
             }
             GET_FOREGROUND_APP_URI => {
                 if !permissions.top_level.contains("READ_RUNNING_APPS") {
@@ -917,6 +935,26 @@ impl WebOsTestServer {
         if runtime.tv.power_state != WebOsPowerState::PowerOff {
             runtime.tv.power_state = WebOsPowerState::PowerOff;
         }
+    }
+
+    /// Start a power change: the next `reads` power-state answers keep the
+    /// current state and name `processing`, then the TV reports `settles_to`.
+    #[allow(dead_code)]
+    pub(crate) fn begin_power_change(
+        &self,
+        processing: &str,
+        reads: u32,
+        settles_to: WebOsPowerState,
+    ) {
+        self.runtime
+            .lock()
+            .expect("webOS test server state")
+            .tv
+            .power_change = Some(WebOsTestPowerChange {
+            processing: processing.to_string(),
+            reads,
+            settles_to,
+        });
     }
 
     /// Blank the screen while leaving the TV powered on and reachable, so

@@ -47,6 +47,33 @@ impl fmt::Display for WebOsPowerState {
     }
 }
 
+/// One `getPowerState` answer.
+///
+/// While the TV changes power state it keeps reporting the state it is
+/// leaving and names the change in `processing`: powering off reads `Active`
+/// with `Request Power Off`, then `Prepare Active Standby`, for about three
+/// seconds. Only a reading without `processing` says where the TV is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebOsPowerReading {
+    pub state: WebOsPowerState,
+    pub processing: Option<String>,
+}
+
+impl WebOsPowerReading {
+    pub fn is_settled(&self) -> bool {
+        self.processing.is_none()
+    }
+}
+
+impl fmt::Display for WebOsPowerReading {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.processing {
+            Some(processing) => write!(f, "{} ({processing})", self.state),
+            None => write!(f, "{}", self.state),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum WebOsPowerStateError {
     Request { source: WebOsClientError },
@@ -108,10 +135,14 @@ impl Error for WebOsPowerStateError {
 
 impl WebOsClient {
     pub fn power_state(&mut self) -> Result<WebOsPowerState, WebOsPowerStateError> {
+        self.power_reading().map(|reading| reading.state)
+    }
+
+    pub fn power_reading(&mut self) -> Result<WebOsPowerReading, WebOsPowerStateError> {
         let response = self
             .send_request(GET_POWER_STATE_URI, json!({}))
             .map_err(|source| WebOsPowerStateError::Request { source })?;
-        parse_power_state_response(&response)
+        parse_power_reading_response(&response)
     }
 
     /// Powers off the TV and consumes the client so its connection cannot be reused.
@@ -123,6 +154,12 @@ impl WebOsClient {
 pub(crate) fn parse_power_state_response(
     response: &Value,
 ) -> Result<WebOsPowerState, WebOsPowerStateError> {
+    parse_power_reading_response(response).map(|reading| reading.state)
+}
+
+pub(crate) fn parse_power_reading_response(
+    response: &Value,
+) -> Result<WebOsPowerReading, WebOsPowerStateError> {
     let payload = match response.get("payload") {
         Some(Value::Object(payload)) => payload,
         Some(_) => return Err(WebOsPowerStateError::InvalidPayload),
@@ -152,13 +189,68 @@ pub(crate) fn parse_power_state_response(
         None => return Err(WebOsPowerStateError::MissingState),
     };
 
-    Ok(WebOsPowerState::from_wire_value(state))
+    // A blank or non-string `processing` names no change the TV is making.
+    let processing = payload
+        .get("processing")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|processing| !processing.is_empty())
+        .map(str::to_string);
+
+    Ok(WebOsPowerReading {
+        state: WebOsPowerState::from_wire_value(state),
+        processing,
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_power_state_response, WebOsPowerState, WebOsPowerStateError};
+    use super::{
+        parse_power_reading_response, parse_power_state_response, WebOsPowerReading,
+        WebOsPowerState, WebOsPowerStateError,
+    };
     use serde_json::json;
+
+    #[test]
+    fn processing_marks_a_reading_as_changing() {
+        // Recorded from an OLED42C2 powering off with the remote.
+        let response = json!({
+            "payload": {
+                "onOff": "off",
+                "processing": "Request Power Off",
+                "reason": "remoteKey",
+                "returnValue": true,
+                "state": "Active",
+            },
+        });
+
+        let reading = parse_power_reading_response(&response).expect("valid power reading");
+
+        assert_eq!(
+            reading,
+            WebOsPowerReading {
+                state: WebOsPowerState::Active,
+                processing: Some("Request Power Off".to_string()),
+            }
+        );
+        assert!(!reading.is_settled());
+        assert_eq!(reading.to_string(), "Active (Request Power Off)");
+    }
+
+    #[test]
+    fn a_reading_without_processing_is_settled() {
+        for payload in [
+            json!({"returnValue": true, "state": "Active Standby"}),
+            json!({"returnValue": true, "state": "Active Standby", "processing": " "}),
+            json!({"returnValue": true, "state": "Active Standby", "processing": 3}),
+        ] {
+            let reading = parse_power_reading_response(&json!({ "payload": payload }))
+                .expect("valid power reading");
+
+            assert_eq!(reading.state, WebOsPowerState::ActiveStandby);
+            assert!(reading.is_settled());
+        }
+    }
 
     #[test]
     fn active_and_standby_states_parse_to_typed_values() {

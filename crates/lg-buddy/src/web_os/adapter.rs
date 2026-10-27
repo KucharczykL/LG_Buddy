@@ -2,7 +2,7 @@ use super::{
     WebOsAudioStatusError, WebOsAudioVolume, WebOsAuthenticatedClientError,
     WebOsBacklightBrightness, WebOsBacklightBrightnessError, WebOsClient, WebOsClientError,
     WebOsControlError, WebOsEndpoint, WebOsForegroundAppError, WebOsModelNameError,
-    WebOsPowerState, WebOsPowerStateError, WebOsScreenControlError,
+    WebOsPowerReading, WebOsPowerState, WebOsPowerStateError, WebOsScreenControlError,
     WebOsSetBacklightBrightnessError,
 };
 use crate::platform_access_token::{PlatformAccessTokenAcquisitionError, PlatformAccessTokenStore};
@@ -12,7 +12,47 @@ use crate::tv::{
 };
 use std::fmt;
 use std::sync::{Mutex, MutexGuard};
-use std::time::Duration;
+use std::thread;
+use std::time::{Duration, Instant};
+
+/// How the adapter waits out a TV that is changing power state.
+///
+/// A TV that is powering off still answers `Active` for a few seconds, and
+/// after a power-off it keeps shutting down after it stops answering. Acting
+/// in either window turned a screen off right after it was restored, and once
+/// left a TV that answered neither the network nor a short press of its power
+/// button.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PowerTiming {
+    /// Pause between power-state reads while a change is in progress.
+    pub(crate) poll_interval: Duration,
+    /// Longest wait for a change to finish before the command is refused.
+    pub(crate) settle_timeout: Duration,
+    /// Time after this client powered the TV off before it connects again.
+    pub(crate) power_off_quiet: Duration,
+}
+
+impl PowerTiming {
+    pub(crate) fn production() -> Self {
+        Self {
+            poll_interval: Duration::from_millis(250),
+            settle_timeout: Duration::from_secs(15),
+            power_off_quiet: duration_override_secs(
+                "LG_BUDDY_POWER_OFF_QUIET_SECS",
+                Duration::from_secs(20),
+            ),
+        }
+    }
+}
+
+fn duration_override_secs(env_key: &str, default: Duration) -> Duration {
+    std::env::var(env_key)
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
+        .map(Duration::from_secs_f64)
+        .unwrap_or(default)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WebOsPairingPolicy {
@@ -27,6 +67,8 @@ pub struct WebOsTvClient {
     token_store: PlatformAccessTokenStore,
     pairing_policy: WebOsPairingPolicy,
     session: Mutex<Option<WebOsClient>>,
+    power_timing: PowerTiming,
+    powered_off_at: Mutex<Option<Instant>>,
 }
 
 impl WebOsTvClient {
@@ -44,7 +86,15 @@ impl WebOsTvClient {
             token_store,
             pairing_policy,
             session: Mutex::new(None),
+            power_timing: PowerTiming::production(),
+            powered_off_at: Mutex::new(None),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_power_timing(mut self, power_timing: PowerTiming) -> Self {
+        self.power_timing = power_timing;
+        self
     }
 
     pub(crate) fn has_stored_access_token(
@@ -112,6 +162,7 @@ impl WebOsTvClient {
         if session.is_some() {
             return Ok(());
         }
+        self.wait_out_own_power_off();
 
         let client = match self.pairing_policy {
             WebOsPairingPolicy::PairIfNeeded => WebOsClient::connect_authenticated(
@@ -137,23 +188,9 @@ impl WebOsTvClient {
 
     fn power_off_controllable_session(&self) -> Result<(), TvError> {
         let operation = TvOperation::PowerOff;
+        let power_state = self.settled_power_reading(operation)?.state;
         let mut session = self.lock_session(operation)?;
         self.ensure_session(operation, &mut session)?;
-
-        let power_state = match session
-            .as_mut()
-            .expect("webOS session was initialized before the operation")
-            .power_state()
-        {
-            Ok(power_state) => power_state,
-            Err(error) => {
-                let failure = power_state_failure(error);
-                if failure.invalidates_session {
-                    *session = None;
-                }
-                return Err(failure.into_tv_error(operation));
-            }
-        };
 
         if !matches!(
             power_state,
@@ -173,13 +210,64 @@ impl WebOsTvClient {
             .expect("webOS session was initialized before power-off");
         client
             .power_off()
-            .map_err(|error| control_failure(error).into_tv_error(operation))
+            .map_err(|error| control_failure(error).into_tv_error(operation))?;
+        if let Ok(mut powered_off_at) = self.powered_off_at.lock() {
+            *powered_off_at = Some(Instant::now());
+        }
+        Ok(())
+    }
+
+    /// Sleeps out what is left of the quiet period after this client's own
+    /// power-off, so no connection or wake reaches a TV still shutting down.
+    fn wait_out_own_power_off(&self) {
+        let remaining = match self.powered_off_at.lock() {
+            Ok(mut powered_off_at) => match *powered_off_at {
+                Some(at) => {
+                    let remaining = self
+                        .power_timing
+                        .power_off_quiet
+                        .saturating_sub(at.elapsed());
+                    if remaining.is_zero() {
+                        *powered_off_at = None;
+                    }
+                    remaining
+                }
+                None => Duration::ZERO,
+            },
+            Err(_) => Duration::ZERO,
+        };
+        if !remaining.is_zero() {
+            thread::sleep(remaining);
+        }
+    }
+
+    /// Reads the power state until no change is in progress.
+    fn settled_power_reading(&self, operation: TvOperation) -> Result<WebOsPowerReading, TvError> {
+        let deadline = Instant::now() + self.power_timing.settle_timeout;
+        loop {
+            let reading = self.with_session(operation, |client| {
+                client.power_reading().map_err(power_state_failure)
+            })?;
+            if reading.is_settled() {
+                return Ok(reading);
+            }
+            if Instant::now() >= deadline {
+                return Err(TvError::new(
+                    operation,
+                    TvErrorKind::Rejected,
+                    format!(
+                        "the TV is still changing power state after {} s: {reading}",
+                        self.power_timing.settle_timeout.as_secs()
+                    ),
+                ));
+            }
+            thread::sleep(self.power_timing.poll_interval);
+        }
     }
 
     fn observe_power_state(&self, operation: TvOperation) -> Result<WebOsPowerState, TvError> {
-        self.with_session(operation, |client| {
-            client.power_state().map_err(power_state_failure)
-        })
+        self.settled_power_reading(operation)
+            .map(|reading| reading.state)
     }
 
     fn verify_power_state(
@@ -339,6 +427,7 @@ impl TvClient for WebOsTvClient {
                 format!("could not map configured input to webOS: {error}"),
             )
         })?;
+        self.settled_power_reading(TvOperation::SetInput)?;
         let command_result = self.with_session(TvOperation::SetInput, |client| {
             client.switch_input(&input_id).map_err(control_failure)
         });
@@ -392,6 +481,7 @@ impl TvClient for WebOsTvClient {
     }
 
     fn blank_screen(&self) -> Result<(), TvError> {
+        self.settled_power_reading(TvOperation::BlankScreen)?;
         let command_result = self.with_session(TvOperation::BlankScreen, |client| {
             client
                 .turn_screen_off()
@@ -406,6 +496,19 @@ impl TvClient for WebOsTvClient {
     }
 
     fn unblank_screen(&self) -> Result<(), TvError> {
+        let reading = self.settled_power_reading(TvOperation::UnblankScreen)?;
+        // Only a lit or blanked TV can turn its screen on; one that settled in
+        // standby needs the full wake.
+        if !matches!(
+            reading.state,
+            WebOsPowerState::Active | WebOsPowerState::ScreenOff
+        ) {
+            return Err(TvError::new(
+                TvOperation::UnblankScreen,
+                TvErrorKind::ScreenNotVisible,
+                format!("the TV reports power state `{reading}`"),
+            ));
+        }
         let command_result = self.with_session(TvOperation::UnblankScreen, |client| {
             client
                 .turn_screen_on()
@@ -717,7 +820,7 @@ impl fmt::Debug for WebOsTvClient {
 
 #[cfg(test)]
 mod tests {
-    use super::{WebOsPairingPolicy, WebOsTvClient};
+    use super::{PowerTiming, WebOsPairingPolicy, WebOsTvClient};
     use crate::config::HdmiInput;
     use crate::tv::{
         CurrentInput, CurrentVolume, OledBrightness, TvClient, TvErrorKind, VolumeLevel,
@@ -731,6 +834,11 @@ mod tests {
 
     const CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
     const RESPONSE_TIMEOUT: Duration = Duration::from_millis(500);
+    const TEST_POWER_TIMING: PowerTiming = PowerTiming {
+        poll_interval: Duration::from_millis(10),
+        settle_timeout: Duration::from_secs(1),
+        power_off_quiet: Duration::ZERO,
+    };
 
     #[test]
     fn ordinary_operation_pairs_and_persists_a_missing_token() {
@@ -1025,6 +1133,80 @@ mod tests {
     }
 
     #[test]
+    fn blank_waits_for_a_power_change_to_finish() {
+        let server =
+            WebOsTestServer::active(WebOsTestVersion::WebOs24Version92261, WebOsTestInput::Hdmi3);
+        let token_fixture = TestAccessTokenStore::new();
+        let client = client_for_server(&server, &token_fixture);
+        server.begin_power_change("Screen On", 3, WebOsPowerState::Active);
+
+        client
+            .blank_screen()
+            .expect("blank after the change finishes");
+
+        assert_eq!(server.snapshot().power_state, WebOsPowerState::ScreenOff);
+    }
+
+    #[test]
+    fn unblank_during_a_power_off_reports_the_settled_state_not_active() {
+        // A TV powering off answers `Active` until it reaches standby, so a
+        // check that ignores the change in progress calls the restore done.
+        let server =
+            WebOsTestServer::active(WebOsTestVersion::WebOs24Version92261, WebOsTestInput::Hdmi3);
+        let token_fixture = TestAccessTokenStore::new();
+        let client = client_for_server(&server, &token_fixture);
+        server.begin_power_change("Request Power Off", 3, WebOsPowerState::Suspend);
+
+        let error = client
+            .unblank_screen()
+            .expect_err("a TV that settles in standby is not restored");
+
+        assert_eq!(error.kind(), TvErrorKind::ScreenNotVisible);
+        assert!(error.detail().contains("Suspend"), "{}", error.detail());
+        assert_eq!(server.snapshot().power_state, WebOsPowerState::Suspend);
+    }
+
+    #[test]
+    fn a_power_change_that_never_finishes_refuses_the_command() {
+        let server =
+            WebOsTestServer::active(WebOsTestVersion::WebOs24Version92261, WebOsTestInput::Hdmi3);
+        let token_fixture = TestAccessTokenStore::new();
+        let client = client_for_server(&server, &token_fixture);
+        server.begin_power_change("Request Power Off", u32::MAX, WebOsPowerState::Suspend);
+
+        let error = client
+            .blank_screen()
+            .expect_err("the command waits for the change, then refuses");
+
+        assert_eq!(error.kind(), TvErrorKind::Rejected);
+        assert!(error.detail().contains("still changing power state"));
+        assert!(error.detail().contains("Active (Request Power Off)"));
+        assert_eq!(server.snapshot().power_state, WebOsPowerState::Active);
+    }
+
+    #[test]
+    fn a_new_connection_waits_out_the_quiet_period_after_its_own_power_off() {
+        let quiet = Duration::from_millis(300);
+        let server =
+            WebOsTestServer::active(WebOsTestVersion::WebOs24Version92261, WebOsTestInput::Hdmi3);
+        let token_fixture = TestAccessTokenStore::new();
+        let client = client_for_server(&server, &token_fixture).with_power_timing(PowerTiming {
+            power_off_quiet: quiet,
+            ..TEST_POWER_TIMING
+        });
+
+        client.power_off().expect("power off");
+        server.simulate_wake(Duration::ZERO);
+        server.finish_wake();
+        let started = std::time::Instant::now();
+        client
+            .current_input()
+            .expect("read input after the quiet period");
+
+        assert!(started.elapsed() >= quiet - Duration::from_millis(50));
+    }
+
+    #[test]
     fn set_input_reports_screen_not_visible_when_screen_off_ack_changes_nothing() {
         let server =
             WebOsTestServer::active(WebOsTestVersion::WebOs24Version92261, WebOsTestInput::Hdmi3);
@@ -1092,6 +1274,7 @@ mod tests {
             token_fixture.store().clone(),
             pairing_policy,
         )
+        .with_power_timing(TEST_POWER_TIMING)
     }
 
     fn brightness(value: u8) -> OledBrightness {
