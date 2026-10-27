@@ -297,8 +297,27 @@ impl fmt::Display for SettingsReadError {
 
 impl Error for SettingsReadError {}
 
+/// Settings and their observed update owner returned by one read operation.
+#[derive(Debug, Clone)]
+pub struct SettingsReadSnapshot {
+    pub groups: Vec<SettingsGroup>,
+    pub installation_ownership: Option<crate::upgrade_preflight::InstallationOwnership>,
+}
+
+impl From<Vec<SettingsGroup>> for SettingsReadSnapshot {
+    fn from(groups: Vec<SettingsGroup>) -> Self {
+        Self {
+            groups,
+            installation_ownership: None,
+        }
+    }
+}
+
 pub trait SettingsBackend: Send + Sync + 'static {
     fn read_settings(&self) -> Result<Vec<SettingsGroup>, SettingsReadError>;
+    fn read_settings_snapshot(&self) -> Result<SettingsReadSnapshot, SettingsReadError> {
+        self.read_settings().map(SettingsReadSnapshot::from)
+    }
 
     fn check_for_updates(&self) -> Result<UpdateCheckReport, UpdateCheckError>;
 
@@ -313,8 +332,25 @@ pub trait SettingsBackend: Send + Sync + 'static {
 pub struct EnvironmentSettingsBackend;
 
 impl SettingsBackend for EnvironmentSettingsBackend {
+    fn read_settings_snapshot(&self) -> Result<SettingsReadSnapshot, SettingsReadError> {
+        Ok(SettingsReadSnapshot {
+            groups: self.read_settings()?,
+            installation_ownership: Some(crate::update_install::gui_update_ownership()),
+        })
+    }
     fn check_for_updates(&self) -> Result<UpdateCheckReport, UpdateCheckError> {
-        let outcome = crate::updates::check_for_updates()?;
+        let outcome = match crate::updates::check_for_updates() {
+            Err(crate::updates::UpdatesError::ExternallyManaged(ownership)) => {
+                return Ok(UpdateCheckReport {
+                    installed_version: crate::version::VersionInfo::current().version().into(),
+                    channel: crate::updates::saved_update_channel()?,
+                    update_available: false,
+                    warning: None,
+                    installation_ownership: ownership,
+                });
+            }
+            outcome => outcome?,
+        };
         let result = outcome.result();
         Ok(UpdateCheckReport {
             installation_ownership: crate::update_install::gui_update_ownership(),
@@ -446,6 +482,7 @@ impl SettingsApplication {
             SettingsIntent::CheckForUpdates
                 if self.pending_update_check.is_none()
                     && !self.update_install.active()
+                    && self.presentation.update_check().check_action().enabled()
                     && !self.presentation.groups().is_empty() =>
             {
                 let operation = UpdateCheckOperation(self.next_operation_id);
@@ -511,6 +548,14 @@ impl SettingsApplication {
         operation: SettingsReadOperation,
         result: Result<Vec<SettingsGroup>, SettingsReadError>,
     ) -> Option<SettingsTransition> {
+        self.complete_snapshot(operation, result.map(SettingsReadSnapshot::from))
+    }
+
+    pub fn complete_snapshot(
+        &mut self,
+        operation: SettingsReadOperation,
+        result: Result<SettingsReadSnapshot, SettingsReadError>,
+    ) -> Option<SettingsTransition> {
         if !matches!(self.state, SettingsApplicationState::Loading(active) if active == operation) {
             return None;
         }
@@ -521,10 +566,14 @@ impl SettingsApplication {
                 .map(|next| self.transition(None, Some(next), None));
         }
 
+        let observed_ownership = result
+            .as_ref()
+            .ok()
+            .and_then(|snapshot| snapshot.installation_ownership);
         let (presentation, diagnostic) = match result {
-            Ok(groups) => {
+            Ok(snapshot) => {
                 let previous = self.presentation.clone();
-                let mut presentation = SettingsPresentation::ready(groups);
+                let mut presentation = SettingsPresentation::ready(snapshot.groups);
                 presentation.preserve_apply_failures_from(&previous);
                 if let Some(pending) = self.reconcile_mutation.take() {
                     let changed =
@@ -569,7 +618,10 @@ impl SettingsApplication {
                 )
             }
         };
-        let update_check = self.presentation.update_check().clone();
+        let mut update_check = self.presentation.update_check().clone();
+        if let Some(ownership) = observed_ownership {
+            update_check.set_installation_ownership(ownership);
+        }
         self.presentation = presentation;
         *self.presentation.update_check_mut() = update_check;
         if matches!(self.state, SettingsApplicationState::Ready) {
@@ -948,6 +1000,12 @@ fn update_check_notice(
     result: &Result<UpdateCheckReport, UpdateCheckError>,
 ) -> Option<UpdateNotice> {
     match result {
+        Ok(report) if report.installation_ownership.externally_updated() => {
+            Some(UpdateNotice::new(
+                "Managed externally",
+                crate::update_install::update_install_guidance(report.installation_ownership),
+            ))
+        }
         Ok(report) => {
             if !report.update_available {
                 Some(UpdateNotice::new(

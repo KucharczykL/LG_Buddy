@@ -21,6 +21,7 @@ pub struct UpdateCheckPresentation {
     checking: bool,
     install_active: bool,
     result: Option<UpdateCheckReport>,
+    installation_ownership: Option<InstallationOwnership>,
     error: Option<UserFacingError>,
 }
 
@@ -36,6 +37,7 @@ impl Default for UpdateCheckPresentation {
             checking: false,
             install_active: false,
             result: None,
+            installation_ownership: None,
             error: None,
         }
     }
@@ -50,6 +52,14 @@ impl UpdateCheckPresentation {
         self.checking
     }
 
+    pub fn installation_ownership(&self) -> Option<InstallationOwnership> {
+        self.installation_ownership.or_else(|| {
+            self.result
+                .as_ref()
+                .map(|report| report.installation_ownership)
+        })
+    }
+
     pub fn check_action(&self) -> SettingsAction {
         SettingsAction::new(
             if self.checking {
@@ -59,7 +69,11 @@ impl UpdateCheckPresentation {
             } else {
                 "Check for updates"
             },
-            !self.checking && !self.install_active,
+            !self.checking
+                && !self.install_active
+                && !self
+                    .installation_ownership()
+                    .is_some_and(InstallationOwnership::externally_updated),
             SettingsIntent::CheckForUpdates,
         )
     }
@@ -87,6 +101,7 @@ impl UpdateCheckPresentation {
     }
 
     pub(crate) fn set_installation_ownership(&mut self, ownership: InstallationOwnership) {
+        self.installation_ownership = Some(ownership);
         if let Some(report) = &mut self.result {
             report.installation_ownership = ownership;
         }
@@ -95,7 +110,14 @@ impl UpdateCheckPresentation {
     pub(crate) fn complete(&mut self, result: Result<UpdateCheckReport, UserFacingError>) {
         self.checking = false;
         match result {
-            Ok(report) => {
+            Ok(mut report) => {
+                if let Some(owner) = self
+                    .installation_ownership
+                    .filter(|owner| owner.externally_updated())
+                {
+                    report.installation_ownership = owner;
+                }
+                self.installation_ownership = Some(report.installation_ownership);
                 self.result = Some(report);
                 self.error = None;
             }

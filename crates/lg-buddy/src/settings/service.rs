@@ -60,6 +60,10 @@ pub enum UserUnitEnableOutcome {
 }
 
 pub trait ServiceController {
+    /// Observation only; fake controllers retain the historical bundle behavior.
+    fn update_ownership(&self) -> crate::upgrade_preflight::InstallationOwnership {
+        crate::upgrade_preflight::InstallationOwnership::Bundle
+    }
     /// Inject a flow-owned permission session without changing controllers
     /// that do not perform privileged subprocess work.
     fn with_setup_authorization<T>(
@@ -255,6 +259,9 @@ impl SystemdUserServiceController {
 }
 
 impl ServiceController for SystemdUserServiceController {
+    fn update_ownership(&self) -> crate::upgrade_preflight::InstallationOwnership {
+        crate::update_install::gui_update_ownership()
+    }
     fn with_setup_authorization<T>(
         &self,
         lock: Arc<File>,

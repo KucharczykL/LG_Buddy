@@ -32,6 +32,10 @@ jobs:
         run: nix flake check --no-build --all-systems
       - name: Build and exercise the installed package
         run: nix build --print-build-logs --no-link --cores 2 --max-jobs 2 .#checks.x86_64-linux.package
+      - name: Verify update ownership on the real store filesystem
+        run: |
+          package="$(nix eval --raw .#packages.x86_64-linux.lg-buddy.outPath)"
+          bash scripts/test-nix-update-ownership.sh "$package"
 
   verify:
     runs-on: ubuntu-24.04

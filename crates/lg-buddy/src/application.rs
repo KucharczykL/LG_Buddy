@@ -530,6 +530,15 @@ impl Application {
         Some(self.settings_transition(transition))
     }
 
+    pub fn complete_settings_snapshot(
+        &mut self,
+        operation: SettingsReadOperation,
+        result: Result<crate::settings_view::SettingsReadSnapshot, SettingsReadError>,
+    ) -> Option<ApplicationTransition> {
+        let transition = self.settings.complete_snapshot(operation, result)?;
+        Some(self.settings_transition(transition))
+    }
+
     pub fn complete_settings_mutation(
         &mut self,
         operation: &SettingsMutationOperation,

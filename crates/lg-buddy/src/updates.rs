@@ -129,6 +129,7 @@ fn required_enum_setting(
 
 #[derive(Debug)]
 pub enum UpdatesError {
+    ExternallyManaged(crate::upgrade_preflight::InstallationOwnership),
     Http {
         url: String,
         message: String,
@@ -197,6 +198,9 @@ impl Error for UpdatesDeferredFailure {
 impl fmt::Display for UpdatesError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ExternallyManaged(ownership) => {
+                f.write_str(&crate::update_install::update_install_guidance(*ownership).unwrap())
+            }
             Self::Http { url, message } => {
                 write!(f, "could not query GitHub releases API `{url}`: {message}")
             }
@@ -292,6 +296,7 @@ impl Error for UpdatesError {
             Self::Notification(err) => Some(err),
             Self::Io(err) => Some(err),
             Self::Http { .. }
+            | Self::ExternallyManaged(_)
             | Self::ApiStatus { .. }
             | Self::ResponseTooLarge { .. }
             | Self::NoMatchingRelease { .. }

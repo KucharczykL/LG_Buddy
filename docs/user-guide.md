@@ -393,6 +393,14 @@ format, and compatibility behavior.
 <a id="updates"></a>
 ## Check for and install an update
 
+Nix store and Pacman installations show **Managed externally** with instructions
+for their owning package manager. LG Buddy skips release checks and disables its
+installer; the automatic-check and release-channel controls are hidden while
+their saved preferences are preserved. For Nix, update the LG Buddy flake input,
+then rebuild and activate the owning NixOS or Home Manager configuration, or
+update the owning profile. Updating `flake.lock` alone does not activate an
+application update. See [Nix package updates](nix.md#updates-belong-to-nix).
+
 In **Settings → Updates**, the update row shows the installed version and
 **Check for updates**. Checking works even when automatic checks are off and
 uses your saved release channel. The button reads **Checking…** and is disabled

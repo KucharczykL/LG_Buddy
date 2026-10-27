@@ -118,6 +118,16 @@ pub fn run_updates_command<W: io::Write>(
             "updates install must use the install orchestrator".to_string(),
         ));
     }
+    let ownership = crate::update_install::gui_update_ownership();
+    if ownership.externally_updated() {
+        writeln!(writer, "updates: managed externally")?;
+        writeln!(
+            writer,
+            "{}",
+            crate::update_install::update_install_guidance(ownership).unwrap()
+        )?;
+        return Ok(());
+    }
     let client = UreqGitHubReleasesClient::default();
     let version = VersionInfo::current();
     let notification_handoff = SessionBusUpdateNotificationHandoff;
@@ -136,6 +146,10 @@ pub fn run_updates_command<W: io::Write>(
 }
 
 pub fn check_for_updates() -> Result<UpdateCheckOutcome, UpdatesError> {
+    let ownership = crate::update_install::gui_update_ownership();
+    if ownership.externally_updated() {
+        return Err(UpdatesError::ExternallyManaged(ownership));
+    }
     let client = UreqGitHubReleasesClient::default();
     let cache_store = DefaultUpdateCacheStore::from_env();
     let update_settings = EnvUpdateSettings::from_env()?;

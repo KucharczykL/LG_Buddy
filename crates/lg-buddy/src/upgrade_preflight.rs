@@ -39,12 +39,14 @@ impl InstallerPathPolicy {
 
 
 pub mod installer;
+mod nix_ownership;
 mod observation;
 mod package_ownership;
 mod path_safety;
 mod preflight;
 mod trust_placement;
 
+pub(crate) use nix_ownership::running_nix_ownership;
 use observation::observe_process;
 use preflight::{
     evaluate_candidate_preflight as candidate_preflight, evaluate_installed_state,
