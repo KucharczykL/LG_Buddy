@@ -160,8 +160,8 @@ The resulting decisions are dispatched as:
 | `RestoreNow` from auxiliary activity | `SessionEvent::UserActivity` -> `RuntimeEvent` from `AuxiliaryInput` | `screen::run_screen_on_from_env_for_event` |
 
 Only an actual successful screen-blank effect arms the second deadline. Skips,
-lifecycle exclusions, input-query fallback power-off, and blank-failure
-fallback power-off do not. At the deadline, policy rechecks the session marker,
+lifecycle exclusions, input-query failures, and blank-failure fallback
+power-off do not. At the deadline, policy rechecks the session marker,
 configured input, and machine lifecycle. Input-query failure skips without a
 blind fallback. The marker is preserved after the power-off attempt so later
 activity can restore the TV; input mismatch clears it as lost ownership. One
