@@ -895,6 +895,12 @@ may reconnect for safe read-only verification, but it never replays the
 effectful operation. The adapter does not expose webOS power states to policy
 code.
 
+An unblank with no open session first opens a plain TCP connection to the TV
+and refuses at once as a transport failure when none is accepted within one
+second. A TV in deep standby drops the attempt, and the websocket connect would
+otherwise wait out its timeout twice, for the command and for its verification,
+before screen-on could fall back to the full wake.
+
 Each monitor's `RuntimeActionExecutor` retains this adapter across compatible
 events. Client construction and connection remain lazy: starting a monitor
 does not contact the TV. The owner reloads configuration for every action and

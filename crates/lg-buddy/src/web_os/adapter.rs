@@ -11,8 +11,18 @@ use crate::tv::{
     TvOperation, VolumeLevel,
 };
 use std::fmt;
+use std::net::TcpStream;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
+
+/// Longest wait for the TV to accept a TCP connection before an unblank
+/// treats it as off.
+///
+/// A powered TV on the local network answers in milliseconds. One in deep
+/// standby drops the connection attempt, and the unblank would otherwise wait
+/// out the websocket connect timeout twice, for the command and then for its
+/// verification, before the wake could begin.
+const UNBLANK_REACHABILITY_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WebOsPairingPolicy {
@@ -89,6 +99,26 @@ impl WebOsTvClient {
                 Err(failure.into_tv_error(operation))
             }
         }
+    }
+
+    /// Refuses at once when no session is open and the TV does not accept a
+    /// TCP connection within `UNBLANK_REACHABILITY_TIMEOUT`.
+    fn require_reachable(&self, operation: TvOperation) -> Result<(), TvError> {
+        if self.lock_session(operation)?.is_some() {
+            return Ok(());
+        }
+        TcpStream::connect_timeout(&self.endpoint.address(), UNBLANK_REACHABILITY_TIMEOUT)
+            .map(drop)
+            .map_err(|error| {
+                TvError::new(
+                    operation,
+                    TvErrorKind::Transport,
+                    format!(
+                        "the TV did not accept a connection within {} ms: {error}",
+                        UNBLANK_REACHABILITY_TIMEOUT.as_millis()
+                    ),
+                )
+            })
     }
 
     fn lock_session(
@@ -406,6 +436,7 @@ impl TvClient for WebOsTvClient {
     }
 
     fn unblank_screen(&self) -> Result<(), TvError> {
+        self.require_reachable(TvOperation::UnblankScreen)?;
         let command_result = self.with_session(TvOperation::UnblankScreen, |client| {
             client
                 .turn_screen_on()
@@ -1002,6 +1033,36 @@ mod tests {
         assert_eq!(error.kind(), TvErrorKind::Transport);
         assert_eq!(server.snapshot().connection_count, 2);
         server.finish();
+    }
+
+    #[test]
+    fn unblank_of_an_unreachable_tv_fails_without_a_websocket_attempt() {
+        let address = {
+            let listener =
+                std::net::TcpListener::bind("127.0.0.1:0").expect("reserve a local port");
+            listener.local_addr().expect("reserved local address")
+        };
+        let token_fixture = TestAccessTokenStore::new();
+        let client = WebOsTvClient::new(
+            crate::web_os::WebOsEndpoint::wss_at(address),
+            CONNECT_TIMEOUT,
+            RESPONSE_TIMEOUT,
+            token_fixture.store().clone(),
+            WebOsPairingPolicy::StoredTokenOnly,
+        );
+
+        let error = client
+            .unblank_screen()
+            .expect_err("a TV that refuses connections is not restored");
+
+        assert_eq!(error.kind(), TvErrorKind::Transport);
+        assert!(
+            error
+                .detail()
+                .starts_with("the TV did not accept a connection"),
+            "{}",
+            error.detail()
+        );
     }
 
     #[test]

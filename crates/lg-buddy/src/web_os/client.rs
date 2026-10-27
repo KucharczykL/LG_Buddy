@@ -64,6 +64,10 @@ impl WebOsEndpoint {
         }
     }
 
+    pub(crate) fn address(self) -> SocketAddr {
+        self.address
+    }
+
     fn url(self) -> String {
         let scheme = match self.transport {
             WebOsTransport::Ws => "ws",
