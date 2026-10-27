@@ -2,8 +2,8 @@
 
 The flake provides the package foundation for the v2.1.0 NixOS integration in
 [issue #253](https://github.com/Staphylococcus/LG_Buddy/issues/253). It does not yet
-provide the NixOS or Home Manager modules, external update ownership (#254), or
-read-only declaratively managed settings (#255). Installing this package alone
+provide the NixOS or Home Manager modules or read-only declaratively managed
+settings (#255). Installing this package alone
 does not complete LG Buddy setup or establish supported NixOS integration.
 
 ## Build and inspect
@@ -53,11 +53,37 @@ LG Buddy's direct Python dependency is a test input; the GTK dependency closure
 can include Python transitively. Retired `swayidle` and dialog tools are not
 runtime dependencies.
 
+## Updates belong to Nix
+
+LG Buddy recognizes a running executable in a root-owned, immutable Nix store
+package, including launches through profile symlinks and the GTK wrapper. An OS
+name, environment variable or writable store lookalike cannot establish that
+ownership. An unverifiable store payload cannot use the application installer.
+
+For these installations, Settings shows **Managed externally**, explains the
+Nix update procedure and hides the inapplicable automatic-check and release-channel
+controls. Saved preferences remain intact. CLI checks, background checks and
+notification checks return the same guidance without fetching releases or
+creating an update cache. `lg-buddy updates install` refuses installation before
+downloading a payload or requesting authorization.
+
+Update the LG Buddy flake input, then rebuild and activate the owning NixOS or
+Home Manager configuration, or update the owning Nix profile. Updating
+`flake.lock` alone does not replace the running application.
+
+Setup does not require update-check units or activate a timer for a Nix-owned
+runtime, even when automatic checks were previously enabled. If an old timer is
+still enabled or running, setup asks you to disable and stop it through its
+owning configuration. It does not rewrite managed units or clear preferences.
+The forthcoming public modules will express the unit policy declaratively.
+
 ## Validation
 
 ```bash
 nix flake check --no-build --all-systems
 nix build --print-build-logs --no-link .#checks.x86_64-linux.package
+bash scripts/test-nix-update-ownership.sh \
+  "$(nix eval --raw .#packages.x86_64-linux.lg-buddy.outPath)"
 ```
 
 The package build runs the Rust runtime library suite. The installed-package
@@ -67,6 +93,12 @@ D-Bus session and virtual X11 display: once through a profile symlink to the CLI
 and once through the GTK wrapper. Both paths exercise activation, the brightness
 deep link, single-instance replacement and clean application exit.
 
+The ownership smoke runs outside the build sandbox against the built store
+executable and a profile alias. It verifies check/background/notification guidance,
+installer refusal and absence of generated configuration or update cache. Build
+namespaces can expose the store owner as an unmapped UID; those observations do
+not qualify as a trusted root-owned runtime.
+
 These checks verify packaging and installed launch behavior. Native NixOS
 pairing, lifecycle, Plasma integration and generation rollback remain part of
-the full #253 acceptance, after #254 and #255.
+the full #253 acceptance, after #255 and the module implementation.

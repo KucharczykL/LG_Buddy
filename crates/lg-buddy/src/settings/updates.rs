@@ -45,6 +45,12 @@ pub(super) fn apply_check_timer<C: ServiceController>(
     service_controller: &C,
     change: &SettingsChange,
 ) -> Result<SettingsApplyOutcome, SettingsError> {
+    let ownership = service_controller.update_ownership();
+    if ownership.externally_updated() {
+        return Ok(SettingsApplyOutcome::Skipped {
+            reason: crate::update_install::update_install_guidance(ownership).unwrap(),
+        });
+    }
     if service_controller.systemd_actions_disabled() {
         return Ok(SettingsApplyOutcome::Skipped {
             reason: "skipped systemd apply because LG_BUDDY_SKIP_SYSTEMD_ACTIONS=1".to_string(),
@@ -262,5 +268,61 @@ mod tests {
         assert!(output.is_empty());
 
         let _ = fs::remove_file(path);
+    }
+}
+
+#[cfg(test)]
+mod external_owner_tests {
+    use super::*;
+    use crate::settings::{SettingsApplier, SettingsCommand, SettingsCommandRunner, SettingsStore};
+    use crate::upgrade_preflight::InstallationOwnership;
+
+    struct ExternalController;
+    impl ServiceController for ExternalController {
+        fn update_ownership(&self) -> InstallationOwnership {
+            InstallationOwnership::NixStore
+        }
+        fn user_service_state(&self, _: &str) -> Result<UserServiceState, SettingsError> {
+            panic!("external preferences must not inspect or activate a timer")
+        }
+        fn restart_user_service(&self, _: &str) -> Result<(), SettingsError> {
+            panic!("no restart")
+        }
+        fn enable_start_user_unit(&self, _: &str) -> Result<UserUnitEnableOutcome, SettingsError> {
+            panic!("no activation")
+        }
+        fn disable_stop_user_unit(&self, _: &str) -> Result<(), SettingsError> {
+            panic!("no mutation of managed units")
+        }
+    }
+
+    #[test]
+    fn external_owner_saves_requested_preferences_without_systemd_apply() {
+        for value in ["enabled", "disabled"] {
+            let path = crate::settings::tests::unique_test_path("external-update-preference");
+            std::fs::write(&path, "updates_channel=prerelease\n").unwrap();
+            let store = SettingsStore::load(&path).unwrap();
+            let runner = SettingsCommandRunner::with_applier(
+                store,
+                SettingsApplier::new(ExternalController),
+            );
+            let mut output = Vec::new();
+            runner
+                .run(
+                    SettingsCommand::Set {
+                        key: "updates.auto_check".into(),
+                        value: value.into(),
+                    },
+                    &mut output,
+                )
+                .unwrap();
+            let saved = std::fs::read_to_string(&path).unwrap();
+            assert!(saved.contains(&format!("updates_auto_check={value}")));
+            assert!(saved.contains("updates_channel=prerelease"));
+            let output = String::from_utf8(output).unwrap();
+            assert!(output.contains("managed by Nix"));
+            assert!(output.contains("rebuild and activate"));
+            std::fs::remove_file(path).unwrap();
+        }
     }
 }

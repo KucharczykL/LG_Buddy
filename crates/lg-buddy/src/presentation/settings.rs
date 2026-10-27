@@ -194,6 +194,16 @@ impl SettingsPresentation {
     /// Keep dependent settings intact while only presenting controls that apply.
     /// Missing or invalid blanking values retain the controls for diagnosis.
     pub fn row_visible(&self, setting: BehaviorSetting) -> bool {
+        if matches!(
+            setting,
+            BehaviorSetting::UpdatesAutoCheck | BehaviorSetting::UpdatesChannel
+        ) && self
+            .update_check
+            .installation_ownership()
+            .is_some_and(crate::upgrade_preflight::InstallationOwnership::externally_updated)
+        {
+            return false;
+        }
         if setting == BehaviorSetting::ScreenBackend {
             return !matches!(
                 self.row(setting).map(SettingsRow::editor),

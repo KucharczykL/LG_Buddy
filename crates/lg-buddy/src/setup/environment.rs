@@ -144,6 +144,7 @@ impl<C: ServiceController> NativeSteps<C> {
             controller: &self.controller,
             authorization: self.context.authorization,
             ownership: self.service_ownership(),
+            update_ownership: self.controller.update_ownership(),
             package_database: &self.package_database,
         }
     }
@@ -153,6 +154,15 @@ impl<C: ServiceController> NativeSteps<C> {
         crate::upgrade_preflight::PathOwnership,
         crate::upgrade_preflight::PackageDatabaseError,
     > {
+        if let Some(ownership) = crate::upgrade_preflight::running_nix_ownership() {
+            return if ownership == crate::upgrade_preflight::InstallationOwnership::NixStore {
+                Ok(crate::upgrade_preflight::PathOwnership::Unowned)
+            } else {
+                Err(crate::upgrade_preflight::PackageDatabaseError::ProbeFailed(
+                    "the running Nix store payload could not be verified".into(),
+                ))
+            };
+        }
         // Immutable installation assessment retains its existing external repair boundary.
         if self.context.system_root.join("etc/NIXOS").exists()
             || self.context.system_root.join("run/ostree-booted").exists()
@@ -226,6 +236,7 @@ impl<C: ServiceController + Send> SetupSteps for NativeSteps<C> {
                             controller,
                             authorization: self.context.authorization,
                             ownership: self.service_ownership(),
+                            update_ownership: controller.update_ownership(),
                             package_database: &self.package_database,
                         }
                         .execute(cancellation, progress)

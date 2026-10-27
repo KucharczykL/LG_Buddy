@@ -462,12 +462,12 @@ pub fn installation_ownership(
     }
 }
 
-/// The *installation-level* ownership answer. `Bundle` (a plain
-/// release-bundle install, unowned) and `Package` (managed by a named
-/// family) are the two usable states; `Unknown` is fail-closed — the guard
-/// refuses to act on it.
+/// The installation-level ownership answer. Each known owner determines its
+/// applicable update flow; `Unknown` refuses payload mutation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstallationOwnership {
+    /// A root-owned, immutable Nix store runtime, including its GTK wrapper.
+    NixStore,
     /// A plain release-bundle install: the executable is unowned *and* the
     /// installed layout satisfies the release-bundle contract.
     Bundle,
@@ -479,8 +479,18 @@ pub enum InstallationOwnership {
 }
 
 impl InstallationOwnership {
-    /// Fail-closed predicate: only a confirmed `Bundle` or `Package` is
-    /// safe to act on; `Unknown` blocks.
+    pub fn externally_updated(self) -> bool {
+        matches!(
+            self,
+            Self::NixStore
+                | Self::Package {
+                    family: PackageFamily::Pacman
+                }
+        )
+    }
+
+    /// Whether the installation owner was established. A known owner does not
+    /// imply permission for LG Buddy to install updates.
     pub fn is_known(&self) -> bool {
         !matches!(self, Self::Unknown)
     }

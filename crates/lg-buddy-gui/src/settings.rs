@@ -1415,7 +1415,7 @@ fn updater_renderer_scenarios(application: &adw::Application) {
     use crate::controller_test_support::pump_until;
     use lg_buddy::presentation::update_check::UpdateCheckReport;
     use lg_buddy::settings::ConfigEnvReader;
-    use lg_buddy::settings_view::{BehaviorSetting, SettingsApplication};
+    use lg_buddy::settings_view::{BehaviorSetting, SettingsApplication, SettingsReadSnapshot};
     use lg_buddy::update_flow::{UpdateInstallOutcome, UpdateInstallTask};
     use lg_buddy::update_install::{PreparedUpdateInstall, UpdateInstallError, UpdateInstallStage};
     use lg_buddy::updates::UpdateChannel;
@@ -1554,10 +1554,10 @@ fn updater_renderer_scenarios(application: &adw::Application) {
         )
         .unwrap();
     view.render(model.presentation());
-    assert_eq!(row.title(), "Update available");
+    assert_eq!(row.title(), "Managed externally");
     assert!(row.subtitle().unwrap().contains("pacman"));
-    assert_eq!(action.label().as_deref(), Some("Check for updates"));
-    assert!(action.is_sensitive());
+    assert_eq!(action.label().as_deref(), Some("Managed externally"));
+    assert!(!action.is_sensitive());
     assert!(!view.updater.presented.get());
     assert!(model
         .handle_intent(SettingsIntent::PrepareUpdateInstall)
@@ -1567,6 +1567,18 @@ fn updater_renderer_scenarios(application: &adw::Application) {
         lg_buddy::upgrade_preflight::PackageFamily::Dpkg,
         lg_buddy::upgrade_preflight::PackageFamily::Rpm,
     ] {
+        let refresh = model.handle_intent(SettingsIntent::Refresh).unwrap();
+        model
+            .complete_snapshot(
+                refresh.read_operation().unwrap(),
+                Ok(SettingsReadSnapshot {
+                    groups: SettingsPresentation::from_store(&store).groups().to_vec(),
+                    installation_ownership: Some(
+                        lg_buddy::upgrade_preflight::InstallationOwnership::Package { family },
+                    ),
+                }),
+            )
+            .unwrap();
         let checking = model
             .handle_intent(SettingsIntent::CheckForUpdates)
             .unwrap();
@@ -1577,9 +1589,7 @@ fn updater_renderer_scenarios(application: &adw::Application) {
                 checking.update_check_operation().unwrap(),
                 Ok(UpdateCheckReport {
                     installation_ownership:
-                        lg_buddy::upgrade_preflight::InstallationOwnership::Package {
-                            family,
-                        },
+                        lg_buddy::upgrade_preflight::InstallationOwnership::Package { family },
                     installed_version: "1.6.0".into(),
                     channel: UpdateChannel::Stable,
                     update_available: true,
@@ -1787,6 +1797,33 @@ fn updater_renderer_scenarios(application: &adw::Application) {
         intents.borrow().is_empty(),
         "rendering must not submit intents"
     );
+    let (mut external, opening) = SettingsApplication::open();
+    external
+        .complete_snapshot(
+            opening.read_operation().unwrap(),
+            Ok(SettingsReadSnapshot {
+                groups: SettingsPresentation::from_store(&store).groups().to_vec(),
+                installation_ownership: Some(
+                    lg_buddy::upgrade_preflight::InstallationOwnership::NixStore,
+                ),
+            }),
+        )
+        .unwrap();
+    view.render(external.presentation());
+    assert_eq!(row.title(), "Managed externally");
+    assert!(row.subtitle().unwrap().contains("managed by Nix"));
+    assert!(row.subtitle().unwrap().contains("rebuild and activate"));
+    assert_eq!(action.label().as_deref(), Some("Managed externally"));
+    assert!(!action.is_sensitive());
+    for native in view.rows.borrow().iter() {
+        match native.presentation.borrow().setting() {
+            BehaviorSetting::UpdatesAutoCheck | BehaviorSetting::UpdatesChannel => {
+                assert!(!native.row.is_visible());
+            }
+            BehaviorSetting::ScreenIdleBlank => assert!(native.row.is_visible()),
+            _ => {}
+        }
+    }
     window.set_default_size(360, 700);
     pump_until(|| window.width() <= 360);
     assert!(view.widget().measure(gtk::Orientation::Horizontal, -1).0 <= 360);
