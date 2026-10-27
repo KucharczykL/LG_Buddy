@@ -913,6 +913,13 @@ TV keeps shutting down after it stops answering, and a wake inside that window
 once left a TV that answered neither the network nor a short press of its
 power button.
 
+An unblank with no open session first waits out that quiet period, then opens
+a plain TCP connection to the TV and refuses at once as a transport failure
+when none is accepted within one second. A TV in deep standby drops the
+attempt, and the websocket connect would otherwise wait out its timeout twice,
+for the command and for its verification, before screen-on could fall back to
+the full wake.
+
 Each monitor's `RuntimeActionExecutor` retains this adapter across compatible
 events. Client construction and connection remain lazy: starting a monitor
 does not contact the TV. The owner reloads configuration for every action and
