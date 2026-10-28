@@ -107,7 +107,7 @@ def main():
             evaluated = json.loads(output("nix", "eval", "--json", "--apply",
                 'p: { inherit (p) version; commit = p.LG_BUDDY_BUILD_COMMIT; }', selection))
             built = json.loads(output("nix", "build", "--json", "--print-build-logs",
-                "--cores", args.cores, "--max-jobs", "2", "--out-link", str(temporary / label), selection))
+                "--cores", args.cores, "--max-jobs", "2", "--out-link", str(temporary / f"result-{label}"), selection))
             package = Path(built[0]["outputs"]["out"])
             print(f"Checking {label} package: {package}", flush=True)
             target = output("nix", "eval", "--raw", "--impure", "--expr",
