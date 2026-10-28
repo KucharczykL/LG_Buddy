@@ -38,6 +38,8 @@ jobs:
         run: nix flake check --no-build --all-systems
       - name: Build and exercise the installed package
         run: nix build --print-build-logs --no-link --cores 2 --max-jobs 2 .#checks.x86_64-linux.package
+      - name: Verify Nix release-channel identities
+        run: python3 scripts/test-nix-release-channels.py
       - name: Validate public module options and activation in a disposable NixOS VM
         run: nix build --print-build-logs --no-link --cores 2 --max-jobs 2 .#checks.x86_64-linux.module-evaluation .#checks.x86_64-linux.modules
       - name: Load the optional bridge in the matching Nix KWin

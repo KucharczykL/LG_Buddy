@@ -349,6 +349,11 @@ moving deployment.
 
 This source selection is separate from LG Buddy's runtime `updates.channel`
 setting, which controls GitHub release discovery for installed release bundles.
+Use the matching [Nix channel outputs](nix.md#install-both-layers) for package
+identity: `stable` for `main`, `prerelease` for that stream, and `dev` for
+development. Locked source metadata does not identify the originally selected
+branch. The prerelease stream reports stable identity while aligned with main;
+development output aliases always retain development identity.
 
 ## Installing from a release bundle
 

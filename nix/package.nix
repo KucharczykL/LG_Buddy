@@ -10,6 +10,7 @@
   python3,
   src,
   buildCommit ? "unknown",
+  channel ? "dev",
 }:
 
 let
@@ -20,10 +21,17 @@ let
     ]);
   };
   cargoToml = builtins.fromTOML (builtins.readFile "${cleanSrc}/crates/lg-buddy/Cargo.toml");
+  version = cargoToml.package.version;
+  prerelease = lib.hasInfix "-" version;
+  releaseChannel = if channel == "dev" then "dev" else if prerelease then "prerelease" else "stable";
 in
+assert lib.assertMsg (builtins.elem channel [ "dev" "stable" "prerelease" ])
+  "LG Buddy channel must be dev, stable or prerelease";
+assert lib.assertMsg (channel != "stable" || !prerelease)
+  "LG Buddy stable packages require a stable Cargo version; select the prerelease output for a prerelease source";
 rustPlatform.buildRustPackage {
   pname = "lg-buddy";
-  version = cargoToml.package.version;
+  inherit version;
   src = cleanSrc;
 
   cargoLock.lockFile = "${cleanSrc}/Cargo.lock";
@@ -36,6 +44,8 @@ rustPlatform.buildRustPackage {
   nativeCheckInputs = [ dbus python3 ];
   buildInputs = [ bash gtk4 libadwaita ];
   LG_BUDDY_BUILD_COMMIT = buildCommit;
+  LG_BUDDY_RELEASE_VERSION = if channel == "dev" then "" else version;
+  passthru = { inherit releaseChannel; };
 
   postInstall = ''
     kwin_dir="$out/lib/lg-buddy/kwin"

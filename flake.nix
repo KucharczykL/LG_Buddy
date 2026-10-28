@@ -18,26 +18,60 @@
         "x86_64-linux"
         "aarch64-linux"
       ];
+      channels = [
+        "dev"
+        "stable"
+        "prerelease"
+      ];
+      version = (builtins.fromTOML (builtins.readFile ./crates/lg-buddy/Cargo.toml)).package.version;
     in
     {
-      nixosModules.lg-buddy = import ./nix/modules/nixos.nix { source = self; };
-      nixosModules.default = self.nixosModules.lg-buddy;
-      homeManagerModules.lg-buddy = import ./nix/modules/home-manager.nix { source = self; };
-      homeManagerModules.default = self.homeManagerModules.lg-buddy;
+      nixosModules =
+        nixpkgs.lib.genAttrs channels (
+          channel:
+          import ./nix/modules/nixos.nix {
+            source = self;
+            inherit channel;
+          }
+        )
+        // {
+          lg-buddy = self.nixosModules.dev;
+          default = self.nixosModules.dev;
+        };
+      homeManagerModules =
+        nixpkgs.lib.genAttrs channels (
+          channel:
+          import ./nix/modules/home-manager.nix {
+            source = self;
+            inherit channel;
+          }
+        )
+        // {
+          lg-buddy = self.homeManagerModules.dev;
+          default = self.homeManagerModules.dev;
+        };
 
       packages = forAllSystems (
         system:
         let
           pkgs = import nixpkgs { inherit system; };
-          lg-buddy = pkgs.callPackage ./nix/package.nix {
-            src = self;
-            buildCommit = self.rev or self.dirtyRev or "unknown";
-          };
+          packageFor =
+            channel:
+            pkgs.callPackage ./nix/package.nix {
+              inherit channel;
+              src = self;
+              buildCommit = self.rev or self.dirtyRev or "unknown";
+            };
         in
         {
-          inherit lg-buddy;
-          lg-buddy-kwin = pkgs.callPackage ./nix/kwin.nix { package = lg-buddy; };
-          default = lg-buddy;
+          lg-buddy = packageFor "dev";
+          lg-buddy-dev = self.packages.${system}.lg-buddy;
+          lg-buddy-prerelease = packageFor "prerelease";
+          lg-buddy-kwin = pkgs.callPackage ./nix/kwin.nix { package = self.packages.${system}.lg-buddy; };
+          default = self.packages.${system}.lg-buddy;
+        }
+        // nixpkgs.lib.optionalAttrs (!(nixpkgs.lib.hasInfix "-" version)) {
+          lg-buddy-stable = packageFor "stable";
         }
       );
 
