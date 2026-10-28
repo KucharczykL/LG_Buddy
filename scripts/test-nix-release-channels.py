@@ -77,31 +77,42 @@ def main():
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     system = output("nix", "eval", "--impure", "--raw", "--expr", "builtins.currentSystem")
+    version = output("nix", "eval", "--raw", f"{root}#packages.{system}.default.version")
     with tempfile.TemporaryDirectory(prefix="lg-buddy-nix-channels-") as directory:
         temporary = Path(directory)
         stable = temporary / "stable"
         prerelease = temporary / "prerelease"
         fixture(root, stable, "9.8.7")
         fixture(root, prerelease, "9.8.7-beta.1")
-        for source in (stable, prerelease):
+        for source, expected_version, expected_channel in [
+            (stable, "9.8.7", "stable"),
+            (prerelease, "9.8.7-beta.1", "prerelease"),
+        ]:
             subprocess.run(["nix", "flake", "check", "--no-build", "--all-systems",
                             f"path:{source}"], check=True)
-            # The development output stays development even with a beta Cargo
-            # version, and the backwards-compatible aliases select that output.
+            # Development is explicit, independently of the Cargo version.
             development = json.loads(output("nix", "eval", "--json", "--apply",
                 'p: { channel = p.releaseChannel; release = p.LG_BUDDY_RELEASE_VERSION; }',
                 f"path:{source}#packages.{system}.lg-buddy-dev"))
             assert development == {"channel": "dev", "release": ""}
             default = output("nix", "eval", "--raw", f"path:{source}#packages.{system}.default.outPath")
-            explicit = output("nix", "eval", "--raw", f"path:{source}#packages.{system}.lg-buddy-dev.outPath")
-            assert default == explicit
+            release = json.loads(output("nix", "eval", "--json", "--apply",
+                'p: { channel = p.releaseChannel; release = p.LG_BUDDY_RELEASE_VERSION; }',
+                f"path:{source}#packages.{system}.default"))
+            assert release == {"channel": expected_channel, "release": expected_version}, release
+            for attribute in ("lg-buddy", f"lg-buddy-{expected_channel}"):
+                explicit = output("nix", "eval", "--raw", f"path:{source}#packages.{system}.{attribute}.outPath")
+                assert default == explicit, attribute
+            development_path = output("nix", "eval", "--raw", f"path:{source}#packages.{system}.lg-buddy-dev.outPath")
+            assert development_path != default
         tools = json.loads(output("nix", "build", "--json", "--out-link", str(temporary / "tools"),
                                   "--inputs-from", str(root), "nixpkgs#binutils"))
         objcopy = Path(tools[0]["outputs"]["out"]) / "bin/objcopy"
+        # Exercise the checkout's ordinary release output and the opposite fixture.
         for label, source, attribute, expected_channel in [
             ("dev", str(root), "lg-buddy-dev", "dev"),
-            ("stable", f"path:{stable}", "lg-buddy-stable", "stable"),
-            ("prerelease", f"path:{prerelease}", "lg-buddy-prerelease", "prerelease"),
+            ("stable", str(root) if "-" not in version else f"path:{stable}", "default", "stable"),
+            ("prerelease", str(root) if "-" in version else f"path:{prerelease}", "default", "prerelease"),
         ]:
             selection = f"{source}#packages.{system}.{attribute}"
             evaluated = json.loads(output("nix", "eval", "--json", "--apply",

@@ -1,6 +1,6 @@
 {
   source,
-  channel ? "dev",
+  channel ? "release",
 }:
 {
   config,

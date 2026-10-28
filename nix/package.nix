@@ -10,7 +10,7 @@
   python3,
   src,
   buildCommit ? "unknown",
-  channel ? "dev",
+  channel ? "release",
 }:
 
 let
@@ -25,8 +25,8 @@ let
   prerelease = lib.hasInfix "-" version;
   releaseChannel = if channel == "dev" then "dev" else if prerelease then "prerelease" else "stable";
 in
-assert lib.assertMsg (builtins.elem channel [ "dev" "stable" "prerelease" ])
-  "LG Buddy channel must be dev, stable or prerelease";
+assert lib.assertMsg (builtins.elem channel [ "release" "dev" "stable" "prerelease" ])
+  "LG Buddy channel must be release, dev, stable or prerelease";
 assert lib.assertMsg (channel != "stable" || !prerelease)
   "LG Buddy stable packages require a stable Cargo version; select the prerelease output for a prerelease source";
 rustPlatform.buildRustPackage {

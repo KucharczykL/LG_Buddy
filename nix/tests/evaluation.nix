@@ -84,7 +84,8 @@ let
           homePackage =
             (homeWithModule self.homeManagerModules.${channel} { } { })
             .options.services.lg-buddy.package.default;
-          version = (builtins.fromTOML (builtins.readFile "${self}/crates/lg-buddy/Cargo.toml")).package.version;
+          version =
+            (builtins.fromTOML (builtins.readFile "${self}/crates/lg-buddy/Cargo.toml")).package.version;
           isPrerelease = lib.hasInfix "-" version;
           expected =
             if channel == "dev" then
@@ -100,15 +101,42 @@ let
           machinePackage.outPath == homePackage.outPath
           && machinePackage.releaseChannel == expected
           &&
-            machinePackage.outPath
-            == self.packages.${pkgs.stdenv.hostPlatform.system}."lg-buddy-${channel}".outPath
+            machinePackage.outPath == self.packages.${pkgs.stdenv.hostPlatform.system}.${
+              if
+                builtins.elem channel [
+                  "default"
+                  "lg-buddy"
+                ]
+              then
+                channel
+              else
+                "lg-buddy-${channel}"
+            }.outPath
       )
       [
+        "default"
+        "lg-buddy"
         "dev"
         "stable"
         "prerelease"
       ]
     ) "Channel modules and package outputs must select the same build identity")
+    (check (
+      let
+        release = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+        factoryDefaults = [
+          (pkgs.callPackage ../package.nix {
+            src = self;
+            buildCommit = self.rev or self.dirtyRev or "unknown";
+          })
+          (systemWith (import ../modules/nixos.nix { source = self; }) { })
+          .options.services.lg-buddy.package.default
+          (homeWithModule (import ../modules/home-manager.nix { source = self; }) { } { })
+          .options.services.lg-buddy.package.default
+        ];
+      in
+      builtins.all (package: package.outPath == release.outPath) factoryDefaults
+    ) "Package and module factories must default to release identity")
     (check (
       machine.services.lg-buddy.configPath == user.services.lg-buddy.configPath
     ) "Default machine/user config must agree")

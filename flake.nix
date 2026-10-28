@@ -35,8 +35,8 @@
           }
         )
         // {
-          lg-buddy = self.nixosModules.dev;
-          default = self.nixosModules.dev;
+          lg-buddy = import ./nix/modules/nixos.nix { source = self; };
+          default = self.nixosModules.lg-buddy;
         };
       homeManagerModules =
         nixpkgs.lib.genAttrs channels (
@@ -47,8 +47,8 @@
           }
         )
         // {
-          lg-buddy = self.homeManagerModules.dev;
-          default = self.homeManagerModules.dev;
+          lg-buddy = import ./nix/modules/home-manager.nix { source = self; };
+          default = self.homeManagerModules.lg-buddy;
         };
 
       packages = forAllSystems (
@@ -64,8 +64,8 @@
             };
         in
         {
-          lg-buddy = packageFor "dev";
-          lg-buddy-dev = self.packages.${system}.lg-buddy;
+          lg-buddy = packageFor "release";
+          lg-buddy-dev = packageFor "dev";
           lg-buddy-prerelease = packageFor "prerelease";
           lg-buddy-kwin = pkgs.callPackage ./nix/kwin.nix { package = self.packages.${system}.lg-buddy; };
           default = self.packages.${system}.lg-buddy;
