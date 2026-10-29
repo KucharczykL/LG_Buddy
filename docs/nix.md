@@ -3,6 +3,8 @@
 The flake exports `nixosModules.lg-buddy` and `homeManagerModules.lg-buddy`
 (with `default` aliases), plus matching CLI/GTK packages for `x86_64-linux` and
 `aarch64-linux`. These are the public declarations for the v2.1 NixOS route.
+Ordinary package/module outputs use release identity from the source Cargo
+version: stable for a stable version, prerelease for a prerelease version.
 The native runner below exercises fresh x86_64 GNOME/Plasma installations and
 generation changes in desktop VMs. Physical-TV and hardware lifecycle
 qualification remains open in [#253](https://github.com/Staphylococcus/LG_Buddy/issues/253);
@@ -35,7 +37,7 @@ consumer's lock file. Choose an appropriate revision when adopting it.
       system = "x86_64-linux";
       modules = [
         ./configuration.nix # Hardware, boot and the rest of your host configuration.
-        lg-buddy.nixosModules.default
+        lg-buddy.nixosModules.dev
         home-manager.nixosModules.home-manager
         {
           networking.networkmanager.enable = true;
@@ -49,7 +51,7 @@ consumer's lock file. Choose an appropriate revision when adopting it.
           home-manager.useGlobalPkgs = true;
           home-manager.useUserPackages = true;
           home-manager.users.alice = { osConfig, ... }: {
-            imports = [ lg-buddy.homeManagerModules.default ];
+            imports = [ lg-buddy.homeManagerModules.dev ];
             home.stateVersion = "26.05"; # Keep your existing value on an existing home.
             services.lg-buddy = {
               enable = true;
@@ -69,6 +71,32 @@ consumer's lock file. Choose an appropriate revision when adopting it.
 }
 ```
 
+Select matching source and channel outputs for the desired release stream:
+
+| Input branch | NixOS / Home Manager module | Package output | Reported channel |
+| --- | --- | --- | --- |
+| `main` | `nixosModules.default` / `homeManagerModules.default` | `default` or `lg-buddy` | `stable` |
+| `prerelease` | `nixosModules.default` / `homeManagerModules.default` | `default` or `lg-buddy` | `prerelease`, or `stable` while aligned with `main` |
+| `dev` | `nixosModules.dev` / `homeManagerModules.dev` | `lg-buddy-dev` | `dev` |
+
+For example, after the public flake is promoted to `main`, use
+`lg-buddy.url = "github:Staphylococcus/LG_Buddy/main";` and import the two
+`default` modules. They build matching CLI/GUI packages automatically. Keep the
+Home Manager `package = osConfig.services.lg-buddy.package;` wiring shown above.
+
+The `default` and `lg-buddy` package/module outputs use release identity.
+Development identity requires `lg-buddy-dev` and the `dev` modules, including
+when Cargo contains a beta version. Direct imports of `nix/package.nix` and
+the module factories also default to release identity; pass `channel = "dev"`
+when importing them for development builds. Locked GitHub sources expose the
+revision, not the branch used to select it, so a `dev` branch URL alone does
+not select development identity. The example above explicitly selects both.
+The named `stable` and `prerelease` outputs remain available. Stable outputs
+reject prerelease Cargo versions; no version override is needed.
+The lock file still pins the source commit, and changing the lock requires the
+usual rebuild and activation. The runtime `updates.channel` preference does not
+select a Nix source or package.
+
 Run `sudo nixos-rebuild switch --flake .#desktop`, then enter a graphical session
 and launch **LG Buddy** from the application menu, or run `lg-buddy`. Pair through
 the normal GUI or `lg-buddy setup`. There is no config-restoration prerequisite:
@@ -86,7 +114,8 @@ The runtime refuses symlinked/unsafe config paths and conflicting old selectors;
 it never makes the writable config a store file. Preserve an existing valid
 selection when migrating an installation.
 
-For standalone Home Manager, import `lg-buddy.homeManagerModules.default` into
+For standalone Home Manager, import `lg-buddy.homeManagerModules.default` for
+release identity or `lg-buddy.homeManagerModules.dev` for development identity into
 your existing `homeConfigurations.<name>` and set `services.lg-buddy.enable`,
 `package` and `configPath` to match the separately activated NixOS module. Apply
 with `home-manager switch --flake .#<name>` after the machine rebuild. Its user
@@ -237,11 +266,20 @@ python3 scripts/test-declarative-settings.py \
 
 The package builds matching CLI/GUI binaries, wraps GTK and installs their
 matching launchers, icon, GNOME brightness extension and KWin inspection payload.
-The CLI remains an ELF for executable-ownership and companion discovery. Flake
-builds embed their revision and retain the `dev` channel; packaging is not release
+The CLI remains an ELF for executable-ownership and companion discovery. All
+channel packages embed their source revision. Release outputs set release
+identity from the Cargo version; development outputs retain `dev` identity even
+when Cargo contains a stable or prerelease version. Packaging is not release
 publication. `flake.lock` pins nixpkgs and the Home Manager test interface;
 `Cargo.lock` pins Rust dependencies. Python is a test input, not a direct runtime
 requirement; retired `swayidle`/dialog tools are not dependencies.
+
+`python3 scripts/test-nix-release-channels.py` builds ordinary stable/prerelease
+outputs and the explicitly selected development package. Isolated version
+fixtures also check default and named outputs for stable and beta sources.
+It executes both installed binaries,
+checks their ELF identity records, and verifies external Nix update ownership.
+The fixtures do not change the checkout's versions or activate host services.
 
 Module checks evaluate valid/invalid options and use real NixOS/Home Manager
 activation and systemd managers in a disposable VM. Real CLI publication/settings

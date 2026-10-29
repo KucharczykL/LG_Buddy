@@ -7,12 +7,12 @@
 let
   inherit (pkgs) lib;
   package = pkgs.writeShellScriptBin "lg-buddy" "exit 0";
-  system =
-    extra:
+  systemWith =
+    module: extra:
     nixpkgs.lib.nixosSystem {
       inherit (pkgs.stdenv.hostPlatform) system;
       modules = [
-        self.nixosModules.lg-buddy
+        module
         {
           system.stateVersion = "26.05";
           boot.loader.grub.enable = false;
@@ -34,12 +34,13 @@ let
         extra
       ];
     };
-  homeWith =
-    extraSpecialArgs: extra:
+  system = systemWith self.nixosModules.lg-buddy;
+  homeWithModule =
+    module: extraSpecialArgs: extra:
     home-manager.lib.homeManagerConfiguration {
       inherit pkgs extraSpecialArgs;
       modules = [
-        self.homeManagerModules.lg-buddy
+        module
         {
           home = {
             username = "alice";
@@ -54,6 +55,7 @@ let
         extra
       ];
     };
+  homeWith = homeWithModule self.homeManagerModules.lg-buddy;
   home = homeWith { };
   integrated =
     overrides:
@@ -73,6 +75,68 @@ let
   fails = value: !(builtins.tryEval (builtins.deepSeq value true)).success;
   check = condition: message: if condition then true else throw message;
   checks = [
+    (check (builtins.all
+      (
+        channel:
+        let
+          machinePackage =
+            (systemWith self.nixosModules.${channel} { }).options.services.lg-buddy.package.default;
+          homePackage =
+            (homeWithModule self.homeManagerModules.${channel} { } { })
+            .options.services.lg-buddy.package.default;
+          version =
+            (builtins.fromTOML (builtins.readFile "${self}/crates/lg-buddy/Cargo.toml")).package.version;
+          isPrerelease = lib.hasInfix "-" version;
+          expected =
+            if channel == "dev" then
+              "dev"
+            else if isPrerelease then
+              "prerelease"
+            else
+              "stable";
+        in
+        if channel == "stable" && isPrerelease then
+          fails machinePackage.drvPath && fails homePackage.drvPath
+        else
+          machinePackage.outPath == homePackage.outPath
+          && machinePackage.releaseChannel == expected
+          &&
+            machinePackage.outPath == self.packages.${pkgs.stdenv.hostPlatform.system}.${
+              if
+                builtins.elem channel [
+                  "default"
+                  "lg-buddy"
+                ]
+              then
+                channel
+              else
+                "lg-buddy-${channel}"
+            }.outPath
+      )
+      [
+        "default"
+        "lg-buddy"
+        "dev"
+        "stable"
+        "prerelease"
+      ]
+    ) "Channel modules and package outputs must select the same build identity")
+    (check (
+      let
+        release = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+        factoryDefaults = [
+          (pkgs.callPackage ../package.nix {
+            src = self;
+            buildCommit = self.rev or self.dirtyRev or "unknown";
+          })
+          (systemWith (import ../modules/nixos.nix { source = self; }) { })
+          .options.services.lg-buddy.package.default
+          (homeWithModule (import ../modules/home-manager.nix { source = self; }) { } { })
+          .options.services.lg-buddy.package.default
+        ];
+      in
+      builtins.all (package: package.outPath == release.outPath) factoryDefaults
+    ) "Package and module factories must default to release identity")
     (check (
       machine.services.lg-buddy.configPath == user.services.lg-buddy.configPath
     ) "Default machine/user config must agree")

@@ -1,4 +1,7 @@
-{ source }:
+{
+  source,
+  channel ? "release",
+}:
 {
   config,
   lib,
@@ -53,6 +56,7 @@ in
     package = lib.mkOption {
       type = lib.types.package;
       default = pkgs.callPackage ../package.nix {
+        inherit channel;
         src = source;
         buildCommit = source.rev or source.dirtyRev or "unknown";
       };
