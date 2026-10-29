@@ -92,6 +92,9 @@
               pkgs
               ;
           };
+          launcher = import ./nix/tests/launcher.nix {
+            inherit self home-manager pkgs;
+          };
           kwin = pkgs.callPackage ./nix/check-kwin.nix {
             package = self.packages.${system}.lg-buddy;
             bridge = self.packages.${system}.lg-buddy-kwin;

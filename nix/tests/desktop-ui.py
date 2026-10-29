@@ -22,7 +22,20 @@ def sensitivity_path(item):
     return path
 
 
-if scenario == "inhibit":
+if scenario == "identity":
+    bus = dbus.SessionBus()
+    api = dbus.Interface(bus.get_object("org.freedesktop.DBus", "/org/freedesktop/DBus"),
+                         "org.freedesktop.DBus")
+    pid = int(api.GetConnectionUnixProcessID("io.github.staphylococcus.LGBuddy"))
+    executable = Path(f"/proc/{pid}/exe").resolve()
+    expected = Path(sys.argv[2]) / "bin/.lg-buddy-gui-wrapped"
+    assert executable == expected, (executable, expected)
+    status = Path(f"/proc/{pid}/status").read_text()
+    parent = int(next(line.split()[1] for line in status.splitlines() if line.startswith("PPid:")))
+    runtime = Path(f"/proc/{parent}/exe").resolve()
+    assert runtime == Path(sys.argv[2]) / "bin/lg-buddy", runtime
+    print(json.dumps({"pid": pid, "executable": str(executable), "runtime": str(runtime)}))
+elif scenario == "inhibit":
     bus = dbus.SessionBus()
     if bus.name_has_owner("org.gnome.SessionManager"):
         api = dbus.Interface(bus.get_object("org.gnome.SessionManager", "/org/gnome/SessionManager"),
@@ -41,7 +54,16 @@ if scenario == "inhibit":
     while True:
         time.sleep(1)
 elif scenario == "assessment":
-    result = recovery.snapshot(dbus.SessionBus())
+    bus = dbus.SessionBus()
+    if "recheck" in sys.argv[3:]:
+        proxy = bus.get_object(recovery.BUS_NAME, recovery.SESSION_PATH, introspect=False)
+        instance, revision = dbus.Interface(proxy, recovery.SESSION_INTERFACE).RequestSetupAssessment(timeout=2)
+        def reassessed():
+            current = recovery.snapshot(bus)
+            return current if current["instance"] == instance and current["revision"] >= revision else None
+        result = recovery.wait("requested setup reassessment", reassessed)
+    else:
+        result = recovery.snapshot(bus)
     print(json.dumps(result))
     assert result["status"] == sys.argv[2], result
 elif scenario == "gate":

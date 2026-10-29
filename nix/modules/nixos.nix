@@ -98,6 +98,10 @@ in
     ];
     environment.systemPackages = [
       cfg.package
+      (pkgs.callPackage ../desktop-launcher.nix {
+        package = cfg.package;
+        executable = "/run/current-system/sw/bin/lg-buddy";
+      })
     ]
     ++ lib.optional cfg.plasma.enable (pkgs.callPackage ../kwin.nix { package = cfg.package; });
     # A user's explicit kwinrc override still wins. Source metadata stays intact.
