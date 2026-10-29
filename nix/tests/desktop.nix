@@ -286,6 +286,7 @@ pkgs.testers.runNixOSTest {
         # exercise the documented read-only recheck after activation settles.
         machine.wait_for_unit("LG_Buddy_lifecycle.service")
         machine.wait_until_succeeds(ctl + "is-active LG_Buddy_screen.service")
+        machine.wait_until_succeeds(user + "busctl --user status io.github.Staphylococcus.LGBuddy", timeout=90)
         machine.succeed(ui + "assessment Complete recheck")
         assessment("Complete")
 
