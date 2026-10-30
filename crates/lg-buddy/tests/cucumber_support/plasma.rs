@@ -192,6 +192,9 @@ impl PlasmaSetup {
             .arg("/runtime/bin/lg-buddy")
             .env("PATH", "/usr/bin")
             .env("HOME", "/scenario/home")
+            .env("XDG_STATE_HOME", "/scenario/home/.local/state")
+            .env("XDG_CACHE_HOME", "/scenario/home/.cache")
+            .env("XDG_CONFIG_HOME", "/scenario/home/.config")
             .env("DBUS_SESSION_BUS_ADDRESS", &self.address);
         command
     }
