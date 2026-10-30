@@ -8,7 +8,7 @@ version: stable for a stable version, prerelease for a prerelease version.
 The native runner below exercises fresh x86_64 GNOME/Plasma installations and
 generation changes in desktop VMs. Physical-TV and hardware lifecycle
 qualification remains open in [#253](https://github.com/Staphylococcus/LG_Buddy/issues/253);
-development module availability does not establish that final support claim.
+public module availability does not establish that final support claim.
 
 ## Install both layers
 
@@ -18,8 +18,8 @@ monitor, user discovery and read-only settings. Home Manager alone does not
 install machine files or complete system integration. The machine supports one
 selected desktop user's config; it does not install global per-user services.
 
-The following flake fragment uses the unreleased `dev` branch, pinned by the
-consumer's lock file. Choose an appropriate revision when adopting it.
+The following flake fragment follows the stable `main` branch, pinned by the
+consumer's lock file.
 
 ```nix
 {
@@ -29,7 +29,7 @@ consumer's lock file. Choose an appropriate revision when adopting it.
       url = "github:nix-community/home-manager/release-26.05";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    lg-buddy.url = "github:Staphylococcus/LG_Buddy/dev";
+    lg-buddy.url = "github:Staphylococcus/LG_Buddy/main";
   };
 
   outputs = { nixpkgs, home-manager, lg-buddy, ... }: {
@@ -37,7 +37,7 @@ consumer's lock file. Choose an appropriate revision when adopting it.
       system = "x86_64-linux";
       modules = [
         ./configuration.nix # Hardware, boot and the rest of your host configuration.
-        lg-buddy.nixosModules.dev
+        lg-buddy.nixosModules.default
         home-manager.nixosModules.home-manager
         {
           networking.networkmanager.enable = true;
@@ -51,7 +51,7 @@ consumer's lock file. Choose an appropriate revision when adopting it.
           home-manager.useGlobalPkgs = true;
           home-manager.useUserPackages = true;
           home-manager.users.alice = { osConfig, ... }: {
-            imports = [ lg-buddy.homeManagerModules.dev ];
+            imports = [ lg-buddy.homeManagerModules.default ];
             home.stateVersion = "26.05"; # Keep your existing value on an existing home.
             services.lg-buddy = {
               enable = true;
@@ -79,10 +79,10 @@ Select matching source and channel outputs for the desired release stream:
 | `prerelease` | `nixosModules.default` / `homeManagerModules.default` | `default` or `lg-buddy` | `prerelease`, or `stable` while aligned with `main` |
 | `dev` | `nixosModules.dev` / `homeManagerModules.dev` | `lg-buddy-dev` | `dev` |
 
-For example, after the public flake is promoted to `main`, use
-`lg-buddy.url = "github:Staphylococcus/LG_Buddy/main";` and import the two
-`default` modules. They build matching CLI/GUI packages automatically. Keep the
-Home Manager `package = osConfig.services.lg-buddy.package;` wiring shown above.
+For development, use `lg-buddy.url = "github:Staphylococcus/LG_Buddy/dev";`
+and change both imports to `nixosModules.dev` and `homeManagerModules.dev`.
+The modules build matching CLI/GUI packages automatically. Keep the Home Manager
+`package = osConfig.services.lg-buddy.package;` wiring shown above.
 
 The `default` and `lg-buddy` package/module outputs use release identity.
 Development identity requires `lg-buddy-dev` and the `dev` modules, including
@@ -90,7 +90,7 @@ when Cargo contains a beta version. Direct imports of `nix/package.nix` and
 the module factories also default to release identity; pass `channel = "dev"`
 when importing them for development builds. Locked GitHub sources expose the
 revision, not the branch used to select it, so a `dev` branch URL alone does
-not select development identity. The example above explicitly selects both.
+not select development identity.
 The named `stable` and `prerelease` outputs remain available. Stable outputs
 reject prerelease Cargo versions; no version override is needed.
 The lock file still pins the source commit, and changing the lock requires the
