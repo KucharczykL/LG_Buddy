@@ -390,8 +390,25 @@ GUI and terminal changes use the same saved configuration. See
 [Defaults and configuration](defaults-and-configuration.md) for its location,
 format, and compatibility behavior.
 
+### Declaratively managed settings
+
+Managed settings show their declared values and source with disabled editors
+and reset actions. Change these values through the owning declarative
+configuration and activate it. Other settings remain editable. Removing a
+declaration restores the previously saved preference or default; user preferences
+and pairing credentials are preserved. See the
+[declaration format and activation contract](defaults-and-configuration.md#declaratively-managed-settings).
+
 <a id="updates"></a>
 ## Check for and install an update
+
+Nix store and Pacman installations show **Managed externally** with instructions
+for their owning package manager. LG Buddy skips release checks and disables its
+installer; the automatic-check and release-channel controls are hidden while
+their saved preferences are preserved. For Nix, update the LG Buddy flake input,
+then rebuild and activate the owning NixOS or Home Manager configuration, or
+update the owning profile. Updating `flake.lock` alone does not activate an
+application update. See [Nix package updates](nix.md#updates-belong-to-nix).
 
 In **Settings → Updates**, the update row shows the installed version and
 **Check for updates**. Checking works even when automatic checks are off and

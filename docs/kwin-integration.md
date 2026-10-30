@@ -255,6 +255,20 @@ the external `flock` command or shell filesystem utilities. Private D-Bus tests 
 exercise the actual Rust adapter, independent PowerDevil/KWin Booleans, owner
 replacement, delayed replies, cancellation, failure and recovery.
 
+`tests/features/plasma_setup.feature` runs production discovery, the native
+provisioner and the privileged installer/remover together in disposable mount
+and user namespaces. KWin's D-Bus API and package/configuration tools are external
+contract fixtures; privileged file operations are real. It covers `/usr/lib64 ->
+lib`, real `/usr/lib64`, repeat setup, repair with legacy receipts, and rejection
+of an unexpected Qt directory symlink without changing the redirected files.
+
+The required CI `plasma-setup` job additionally runs
+`scripts/test-kwin-native-setup.sh` on Arch and Fedora with real headless KWin,
+an installed runtime and the normal system plugin directory. It exercises setup,
+repeat setup, stale-artifact repair and cleanup without injecting
+`QT_PLUGIN_PATH`. The script requires a disposable host and an ordinary test user
+with passwordless sudo; never run it against a personal desktop installation.
+
 `scripts/test-kwin-plugin.sh` loads each CI artifact into a disposable headless
 KWin, calls its getter and build identity, unloads it and checks compositor survival.
 The complete 33-artifact local run passed these checks. Fedora 43 additionally

@@ -36,6 +36,7 @@ pub(crate) struct ServiceInstallation<'a, C> {
     pub authorization: crate::setup::flow::AuthorizationMode,
     pub controller: &'a C,
     pub ownership: Result<PathOwnership, PackageDatabaseError>,
+    pub update_ownership: crate::upgrade_preflight::InstallationOwnership,
     pub package_database: &'a crate::upgrade_preflight::PackageDatabase,
 }
 
@@ -76,7 +77,7 @@ impl<C: ServiceController> ServiceInstallation<'_, C> {
                 match self.unmet_requirements() {
                     Ok(requirements) => {
                         let owner = if self.declarative_installation() {
-                            "Update the NixOS system and user service configuration, build it, and activate it."
+                            "Update the owning NixOS or Home Manager service configuration, build it, and activate it."
                         } else {
                             "Repair the LG Buddy package and service configuration through your immutable system's image or supported package mechanism."
                         };
@@ -182,6 +183,9 @@ impl<C: ServiceController> ServiceInstallation<'_, C> {
     }
 
     fn desired_timer(&self) -> Result<bool, SettingsError> {
+        if self.update_ownership.externally_updated() {
+            return Ok(false);
+        }
         let store = SettingsStore::load(self.config)?;
         Ok(store
             .effective_by_name("updates.auto_check")?
@@ -190,6 +194,7 @@ impl<C: ServiceController> ServiceInstallation<'_, C> {
     }
     fn declarative_installation(&self) -> bool {
         self.system_root.join("etc/NIXOS").exists()
+            || self.update_ownership == crate::upgrade_preflight::InstallationOwnership::NixStore
     }
     fn override_contents(&self) -> Result<String, SettingsError> {
         let config = fs::canonicalize(self.config).map_err(io_error)?;
@@ -393,6 +398,15 @@ impl<C: ServiceController> ServiceInstallation<'_, C> {
                 ),
             ]);
         }
+        if self.update_ownership.externally_updated() {
+            let update_paths = [
+                self.user_units.join(TIMER),
+                self.user_units.join("LG_Buddy_update_check.service"),
+                self.user_units
+                    .join("LG_Buddy_update_check.service.d/config.conf"),
+            ];
+            files.retain(|spec| !update_paths.contains(&spec.path));
+        }
         Ok(files)
     }
     fn system_files(&self) -> Result<Vec<FileSpec>, SettingsError> {
@@ -481,10 +495,11 @@ impl<C: ServiceController> ServiceInstallation<'_, C> {
             return Ok(false);
         }
         if !self.binding_matches(self.controller.user_service_config_path(SCREEN))?
-            || !self.binding_matches(
-                self.controller
-                    .user_service_config_path("LG_Buddy_update_check.service"),
-            )?
+            || (!self.update_ownership.externally_updated()
+                && !self.binding_matches(
+                    self.controller
+                        .user_service_config_path("LG_Buddy_update_check.service"),
+                )?)
         {
             return Ok(false);
         }
@@ -543,10 +558,11 @@ impl<C: ServiceController> ServiceInstallation<'_, C> {
                 "bind LG_Buddy_screen.service to this configuration",
             ),
             (
-                self.binding_matches(
-                    self.controller
-                        .user_service_config_path("LG_Buddy_update_check.service"),
-                )?,
+                self.update_ownership.externally_updated()
+                    || self.binding_matches(
+                        self.controller
+                            .user_service_config_path("LG_Buddy_update_check.service"),
+                    )?,
                 "bind LG_Buddy_update_check.service to this configuration",
             ),
             (

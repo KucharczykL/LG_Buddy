@@ -826,7 +826,7 @@ impl ApplicationController {
         let backend = Arc::clone(&controller.settings_backend);
         let (sender, receiver) = mpsc::sync_channel(1);
         thread::spawn(move || {
-            let _ = sender.send(backend.read_settings());
+            let _ = sender.send(backend.read_settings_snapshot());
         });
         let controller = Rc::clone(controller);
         let application_hold = controller.gtk_application.hold();
@@ -839,7 +839,7 @@ impl ApplicationController {
             let transition = controller
                 .application
                 .borrow_mut()
-                .complete_settings_read(operation, result);
+                .complete_settings_snapshot(operation, result);
             if let Some(transition) = transition {
                 Self::apply_transition(&controller, transition);
             }

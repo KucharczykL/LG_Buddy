@@ -1,0 +1,267 @@
+{
+  self,
+  home-manager,
+  pkgs,
+  package,
+}:
+let
+  inherit (pkgs) lib;
+  configPath = "/home/alice/TV settings%u$/config.env";
+  # Exercise real publication/settings and real systemd managers. TV/session
+  # operations are recording peers, so this test cannot contact a physical TV.
+  peer = revision:
+    let
+      runtime = pkgs.writeShellScript "lg-buddy" ''
+        set -eu
+        if [ "$#" -eq 0 ]; then
+          exec "$(${pkgs.coreutils}/bin/dirname "$(${pkgs.coreutils}/bin/readlink -f "$0")")/lg-buddy-gui"
+        fi
+        case "$1" in
+          config-binding|settings) exec ${package}/bin/lg-buddy "$@" ;;
+          monitor)
+            printf '%s\n' ${revision} >> "$HOME/monitor-starts"
+            printf '%s\n' "$LG_BUDDY_CONFIG" >> "$HOME/monitor-configs"
+            exec ${pkgs.coreutils}/bin/sleep infinity ;;
+          lifecycle)
+            printf '%s\n' "$LG_BUDDY_CONFIG" >> /run/lg-buddy-lifecycle-configs
+            exec ${pkgs.coreutils}/bin/sleep infinity ;;
+          *) printf '%s\t%s\n' "$*" "$LG_BUDDY_CONFIG" >> /run/lg-buddy-machine-actions ;;
+        esac
+      '';
+      gui = pkgs.writeShellScript "lg-buddy-gui" ''
+        printf '%s\t%s\n' ${revision} "$(${pkgs.coreutils}/bin/readlink -f "$0")" >> "$HOME/gui-launches"
+      '';
+    in
+    pkgs.runCommand "lg-buddy-${revision}" { meta.mainProgram = "lg-buddy"; } ''
+      install -Dm755 ${runtime} "$out/bin/lg-buddy"
+      install -Dm755 ${gui} "$out/bin/lg-buddy-gui"
+      install -Dm644 ${../../io.github.staphylococcus.LGBuddy.desktop} \
+        "$out/share/applications/io.github.staphylococcus.LGBuddy.desktop"
+      substituteInPlace "$out/share/applications/io.github.staphylococcus.LGBuddy.desktop" \
+        --replace-fail 'Exec=/usr/bin/lg-buddy' "Exec=$out/bin/lg-buddy"
+    '';
+  first = peer "first";
+  second = peer "second";
+  python = pkgs.python3.withPackages (p: [ p.dbus-python p.pygobject3 ]);
+  decoy = pkgs.writeShellScriptBin "lg-buddy" "exit 77";
+in
+pkgs.testers.runNixOSTest {
+  name = "lg-buddy-public-modules";
+  nodes.machine = { ... }: {
+    imports = [
+      self.nixosModules.lg-buddy
+      home-manager.nixosModules.home-manager
+    ];
+    virtualisation.memorySize = 2048;
+    virtualisation.cores = 2;
+    networking.networkmanager.enable = true;
+    environment.systemPackages = [ python pkgs.glib ];
+    users.users.alice = {
+      isNormalUser = true;
+      uid = 1000;
+      linger = true;
+    };
+    users.users.bob = {
+      isNormalUser = true;
+      uid = 1001;
+    };
+    services.lg-buddy = {
+      enable = true;
+      user = "alice";
+      package = first;
+      inherit configPath;
+    };
+    home-manager = {
+      useGlobalPkgs = true;
+      useUserPackages = true;
+      backupFileExtension = "lg-buddy-test-backup";
+      users.alice = {
+        imports = [ self.homeManagerModules.lg-buddy ];
+        home.stateVersion = "26.05";
+        services.lg-buddy = {
+          enable = true;
+          package = first;
+          inherit configPath;
+          settings.screen.idle_timeout = 300;
+        };
+      };
+      users.bob = {
+        imports = [ self.homeManagerModules.lg-buddy ];
+        home.stateVersion = "26.05";
+        services.lg-buddy.enable = false;
+      };
+    };
+    # Retained downstream global units must be shadowed for Alice alone.
+    systemd.user.services.LG_Buddy_update_check.serviceConfig = {
+      ExecStart = "${pkgs.coreutils}/bin/sleep infinity";
+    };
+    systemd.user.timers.LG_Buddy_update_check = {
+      timerConfig = {
+        OnActiveSec = "1h";
+        Unit = "LG_Buddy_update_check.service";
+      };
+      wantedBy = [ "default.target" ];
+    };
+    # Pull in the dependency-only graphical target as a desktop session would.
+    systemd.user.targets.test-desktop = {
+      bindsTo = [ "graphical-session.target" ];
+      after = [ "graphical-session-pre.target" ];
+    };
+    specialisation.changed.configuration = {
+      services.lg-buddy.package = lib.mkForce second;
+      home-manager.users.alice.services.lg-buddy = {
+        package = lib.mkForce second;
+        settings.screen.idle_timeout = lib.mkForce 120;
+      };
+    };
+    specialisation.removed.configuration.home-manager.users.alice.services.lg-buddy.settings.screen.idle_timeout =
+      lib.mkForce null;
+    specialisation.disabled.configuration.home-manager.users.alice.services.lg-buddy.enable =
+      lib.mkForce false;
+    specialisation.machine-disabled.configuration = {
+      services.lg-buddy.enable = lib.mkForce false;
+      home-manager.users.alice.services.lg-buddy.enable = lib.mkForce false;
+    };
+  };
+  testScript = ''
+    import shlex
+    start_all()
+    machine.wait_for_unit("multi-user.target")
+    machine.wait_for_unit("home-manager-alice.service")
+    machine.wait_for_unit("home-manager-bob.service")
+    machine.wait_for_file("/run/user/1000/bus")
+    config = ${builtins.toJSON configPath}
+    token = config.rsplit("/", 1)[0] + "/tvs/primary/access-token.json"
+    qconfig = shlex.quote(config)
+    user = "runuser -u alice -- env XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus "
+    ctl = user + "systemctl --user "
+    cli = user + "${package}/bin/lg-buddy "
+    hook = "/etc/NetworkManager/dispatcher.d/pre-down.d/03userscript0001"
+    base = machine.succeed("readlink -f /run/current-system").strip()
+
+    def cached_launchers():
+        for scope in ["System", "Home"]:
+            machine.succeed(user + "busctl --user call io.github.staphylococcus.CachedLauncher" + scope + " /launcher io.github.staphylococcus.CachedLauncher Launch")
+
+    def launched(revisions):
+        machine.wait_until_succeeds("test $(wc -l < /home/alice/gui-launches) -eq " + str(len(revisions)))
+        rows = [line.split("\t") for line in machine.succeed("cat /home/alice/gui-launches").splitlines()]
+        assert rows == [[revision, path + "/bin/lg-buddy-gui"] for revision, path in revisions], rows
+
+    with subtest("fresh activation publishes regular selectors without user config or TV actions"):
+        machine.succeed("test -f /etc/lg-buddy/config-path && test ! -L /etc/lg-buddy/config-path")
+        assert machine.succeed("cat /etc/lg-buddy/config-path").strip() == config
+        machine.succeed("test -f /home/alice/.config/lg-buddy/config-path && test ! -L /home/alice/.config/lg-buddy/config-path")
+        machine.fail("test -e " + qconfig)
+        machine.fail("test -e /run/lg-buddy-machine-actions")
+        machine.succeed(hook + " eth0 pre-down")
+        machine.fail("test -e /run/lg-buddy-machine-actions")
+        machine.succeed("systemctl is-active LG_Buddy.service LG_Buddy_lifecycle.service")
+        machine.succeed(ctl + "is-enabled LG_Buddy_screen.service")
+        machine.fail(ctl + "is-active LG_Buddy_screen.service")
+        machine.fail("test -e /etc/systemd/user/LG_Buddy_screen.service")
+        machine.fail("test -e /home/bob/.config/lg-buddy/config-path")
+        for suffix in ["timer", "service"]:
+            assert machine.succeed(ctl + "is-enabled LG_Buddy_update_check." + suffix + " || true").strip() == "masked"
+            machine.fail(ctl + "start LG_Buddy_update_check." + suffix)
+
+    with subtest("cache both public launchers before any generation changes"):
+        for scope, desktop in [
+            ("System", "/run/current-system/sw/share/applications/io.github.staphylococcus.LGBuddy.desktop"),
+            ("Home", "/etc/profiles/per-user/alice/share/applications/io.github.staphylococcus.LGBuddy.desktop"),
+        ]:
+            machine.succeed(user + "systemd-run --user --setenv=PATH=${decoy}/bin --setenv=GI_TYPELIB_PATH=${pkgs.glib}/lib/girepository-1.0 --unit=cached-launcher-" + scope.lower() + " ${python}/bin/python ${./cached-launcher.py} " + desktop + " io.github.staphylococcus.CachedLauncher" + scope)
+            machine.wait_until_succeeds(user + "busctl --user status io.github.staphylococcus.CachedLauncher" + scope)
+        cached_launchers()
+        launched([("first", "${first}")] * 2)
+
+    with subtest("first writable state retains credentials while declared keys are protected"):
+        machine.succeed(user + "sh -c " + shlex.quote("umask 077; printf 'screen_idle_timeout=600\\n' > " + qconfig))
+        machine.succeed(user + "sh -c " + shlex.quote("umask 077; mkdir -p " + shlex.quote(token.rsplit("/", 1)[0]) + "; printf '{\"access_token\":\"private-fixture-token\"}' > " + shlex.quote(token)))
+        assert machine.succeed(cli + "settings get screen.idle_timeout").strip() == "300"
+        machine.fail(cli + "settings set screen.idle_timeout 450")
+        saved = machine.succeed("sha256sum " + qconfig + " " + shlex.quote(token))
+        machine.succeed(hook + " eth0 up")
+        machine.fail("test -e /run/lg-buddy-machine-actions")
+        machine.succeed(hook + " eth0 pre-down")
+        assert machine.succeed("cat /run/lg-buddy-machine-actions").splitlines() == ["nm-pre-down\t" + config]
+        machine.succeed("rm /run/lg-buddy-machine-actions")
+        machine.wait_for_file("/run/lg-buddy-lifecycle-configs")
+        lifecycle_configs = machine.succeed("cat /run/lg-buddy-lifecycle-configs").splitlines()
+        assert lifecycle_configs == [config], lifecycle_configs
+        machine.succeed(ctl + "start test-desktop.target")
+        machine.wait_until_succeeds(ctl + "is-active LG_Buddy_screen.service", timeout=60)
+        machine.wait_for_file("/home/alice/monitor-starts")
+        assert machine.succeed("cat /home/alice/monitor-starts").splitlines() == ["first"]
+        monitor_configs = machine.succeed("cat /home/alice/monitor-configs").splitlines()
+        assert monitor_configs == [config], monitor_configs
+
+    with subtest("rebuild publishes then refreshes the active matching monitor without TV power actions"):
+        legacy = {
+            "service": "[Service]\nExecStart=${pkgs.coreutils}/bin/sleep infinity\n",
+            "timer": "[Timer]\nOnActiveSec=1h\nUnit=LG_Buddy_update_check.service\n",
+        }
+        for suffix, text in legacy.items():
+            unit = "/home/alice/.config/systemd/user/LG_Buddy_update_check." + suffix
+            machine.succeed(user + "sh -c " + shlex.quote("rm " + unit + "; printf %s " + shlex.quote(text) + " > " + unit))
+        machine.succeed(ctl + "daemon-reload")
+        machine.succeed(ctl + "start LG_Buddy_update_check.timer LG_Buddy_update_check.service")
+        machine.succeed(ctl + "is-active LG_Buddy_update_check.timer LG_Buddy_update_check.service")
+        machine.succeed(base + "/specialisation/changed/bin/switch-to-configuration test")
+        machine.wait_until_succeeds("test $(wc -l < /home/alice/monitor-starts) -eq 2", timeout=60)
+        assert machine.succeed("cat /home/alice/monitor-starts").splitlines() == ["first", "second"]
+        assert machine.succeed(cli + "settings get screen.idle_timeout").strip() == "120"
+        cached_launchers()
+        launched([("first", "${first}")] * 2 + [("second", "${second}")] * 2)
+        assert machine.succeed("sha256sum " + qconfig + " " + shlex.quote(token)) == saved
+        machine.fail("test -e /run/lg-buddy-machine-actions")
+        for suffix in ["timer", "service"]:
+            assert machine.succeed(ctl + "is-enabled LG_Buddy_update_check." + suffix + " || true").strip() == "masked"
+            machine.fail(ctl + "is-active LG_Buddy_update_check." + suffix)
+            machine.fail(ctl + "is-failed LG_Buddy_update_check." + suffix)
+            assert machine.succeed("cat /home/alice/.config/systemd/user/LG_Buddy_update_check." + suffix + ".lg-buddy-test-backup") == legacy[suffix]
+
+    with subtest("rollback refreshes active policy and removal restores saved preferences"):
+        machine.succeed(base + "/bin/switch-to-configuration test")
+        machine.wait_until_succeeds("test $(wc -l < /home/alice/monitor-starts) -eq 3", timeout=60)
+        assert machine.succeed(cli + "settings get screen.idle_timeout").strip() == "300"
+        cached_launchers()
+        launched([("first", "${first}")] * 2 + [("second", "${second}")] * 2 + [("first", "${first}")] * 2)
+        machine.succeed(base + "/specialisation/removed/bin/switch-to-configuration test")
+        assert machine.succeed(cli + "settings get screen.idle_timeout").strip() == "600"
+        machine.fail("test -L " + shlex.quote(config + ".declarative.json"))
+
+    with subtest("an inactive session stays stopped across activation; disable removes policy and user units"):
+        machine.succeed(ctl + "stop test-desktop.target")
+        machine.wait_until_fails(ctl + "is-active LG_Buddy_screen.service", timeout=60)
+        count = machine.succeed("wc -l < /home/alice/monitor-starts")
+        machine.succeed(base + "/bin/switch-to-configuration test")
+        machine.fail(ctl + "is-active LG_Buddy_screen.service")
+        assert machine.succeed("wc -l < /home/alice/monitor-starts") == count
+        machine.succeed(base + "/specialisation/disabled/bin/switch-to-configuration test")
+        machine.fail("test -L " + shlex.quote(config + ".declarative.json"))
+        assert machine.succeed(cli + "settings get screen.idle_timeout").strip() == "600"
+        machine.fail("test -e /home/alice/.config/systemd/user/LG_Buddy_screen.service")
+        assert machine.succeed("sha256sum " + qconfig + " " + shlex.quote(token)) == saved
+        machine.fail("test -e /run/lg-buddy-machine-actions")
+
+    with subtest("installed shutdown and startup use the literal config paired after boot"):
+        machine.succeed("systemctl stop LG_Buddy.service")
+        assert machine.succeed("cat /run/lg-buddy-machine-actions").splitlines() == ["shutdown\t" + config]
+        machine.succeed("rm /run/lg-buddy-machine-actions")
+        machine.succeed("systemctl start LG_Buddy.service")
+        assert machine.succeed("cat /run/lg-buddy-machine-actions").splitlines() == ["startup boot\t" + config]
+        machine.succeed("rm /run/lg-buddy-machine-actions")
+
+    with subtest("machine removal leaves the TV unchanged and removes future integration"):
+        machine.succeed(base + "/specialisation/machine-disabled/bin/switch-to-configuration test")
+        machine.fail("test -e /etc/systemd/system/LG_Buddy.service")
+        machine.succeed("systemctl is-active LG_Buddy.service")
+        machine.fail("systemctl is-active LG_Buddy_lifecycle.service")
+        machine.fail("test -e /run/lg-buddy-machine-actions")
+        assert machine.succeed("sha256sum " + qconfig + " " + shlex.quote(token)) == saved
+
+        machine.succeed("systemctl stop LG_Buddy.service")
+        machine.fail("test -e /run/lg-buddy-machine-actions")
+  '';
+}

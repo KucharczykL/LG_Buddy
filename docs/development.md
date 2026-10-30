@@ -104,11 +104,14 @@ Use `install.sh --headless` for terminal installation and `lg-buddy setup` to
 resume. `configure.sh` forwards to setup. Configured installations and upgrades
 retain their saved settings.
 The application menu offers on-demand diagnostics with Refresh, Copy, and Save.
-The report starts with current settings, service and activity state, and fresh
-inhibition-source readings. Bounded, timestamped service logs follow in a
-separate section; refreshing the report does not change the monitor's decisions.
+The report starts with current settings, service and activity state, fresh
+inhibition-source readings, and read-only running KWin/Qt version and plugin-path
+inspection. Bounded, timestamped service logs and a dated tail of native KWin
+setup output follow in a separate section. Setup failures also retain sanitized
+detail in GUI session events, including failures before a setup log exists.
+Refreshing the report does not change the monitor's decisions or retry setup.
 `diagnostics.rs` orchestrates domain collectors in `diagnostics/`: desktop,
-monitor, inhibition, settings, services, TV, application identity, and journals.
+monitor, inhibition, settings, services, TV, application identity, KWin, and journals.
 Each collector has isolated tests with explicit inputs or injected transports;
 subprocess bounds and report rendering are tested separately. Run them with
 `cargo test -p lg-buddy --lib diagnostics::`; `runtime_entrypoints` tests the
@@ -131,6 +134,11 @@ The resulting binary will be at:
 ```text
 ./target/release/lg-buddy
 ```
+
+The [Nix package](nix.md) builds both binaries with pinned dependencies, installs
+their assets and setup inspection helper, and wraps the GTK companion. Its flake
+check runs runtime library tests and exercises the installed GUI through both the
+wrapper and a profile symlink on a private bus and virtual display.
 
 ## Install a Locally Built Binary
 

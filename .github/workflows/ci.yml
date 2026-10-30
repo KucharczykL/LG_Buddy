@@ -19,6 +19,37 @@ jobs:
   kwin-bridges:
     uses: ./.github/workflows/kwin-bridge.yml
 
+  nix-package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Nix
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          install_url: https://releases.nixos.org/nix/nix-2.34.8/install
+          extra_nix_config: |
+            system-features = nixos-test benchmark big-parallel kvm
+      - name: Allow the disposable NixOS test VM to use KVM
+        run: |
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+      - name: Evaluate public package outputs
+        run: nix flake check --no-build --all-systems
+      - name: Build and exercise the installed package
+        run: nix build --print-build-logs --no-link --cores 2 --max-jobs 2 .#checks.x86_64-linux.package
+      - name: Verify Nix release-channel identities
+        run: python3 scripts/test-nix-release-channels.py
+      - name: Validate public module options and activation in a disposable NixOS VM
+        run: nix build --print-build-logs --no-link --cores 2 --max-jobs 2 .#checks.x86_64-linux.module-evaluation .#checks.x86_64-linux.launcher .#checks.x86_64-linux.modules
+      - name: Load the optional bridge in the matching Nix KWin
+        run: nix build --print-build-logs --no-link --cores 2 --max-jobs 2 .#checks.x86_64-linux.kwin
+      - name: Verify update ownership on the real store filesystem
+        run: |
+          package="$(nix eval --raw .#packages.x86_64-linux.lg-buddy.outPath)"
+          bash scripts/test-nix-update-ownership.sh "$package"
+          python3 scripts/test-declarative-settings.py "$package/bin/lg-buddy" --nix
+
   verify:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -69,7 +100,9 @@ jobs:
             pairing_store::tests::mutation_lock_rejects_unsafe_existing_markers \
             setup::kwin::native::tests::system_install_validates_artifacts_and_preserves_existing_files \
             setup::kwin::native::tests::legacy_lock_migration_preserves_foreign_owned_files \
-            pairing_store::migration::tests::migration_preserves_config_access_metadata; do
+            pairing_store::migration::tests::migration_preserves_config_access_metadata \
+            config::declarative::tests::root_reads_user_owned_declarations_without_materializing_or_bypassing_management \
+            config::activation::tests::root_machine_publication_never_creates_or_claims_user_state; do
             "$test_binary" --list --format=terse | grep -Fx "$test: test"
             sudo env TMPDIR="$privileged_test_dir" "$test_binary" "$test" --exact
           done
@@ -108,6 +141,7 @@ jobs:
         run: |
           cargo build -p lg-buddy -p lg-buddy-gui
           bash scripts/test-settings-compatibility.sh ./target/debug/lg-buddy
+          python3 scripts/test-declarative-settings.py ./target/debug/lg-buddy
           cargo build --locked -p lg-buddy --example gui_journey_tv
           python3 scripts/test-tv-fixture.py ./target/debug/lg-buddy ./target/debug/examples/gui_journey_tv
           python3 scripts/test-setup-cli.py ./target/debug/lg-buddy ./target/debug/examples/gui_journey_tv
@@ -124,7 +158,7 @@ jobs:
 
       - name: Validate shell scripts
         run: |
-          bash -n data/kwin/setup.sh data/kwin/build.sh scripts/test-kwin-plugin.sh scripts/test-kwin-distro.sh scripts/test-kwin-setup.sh scripts/test-gnome-extension.sh install.sh uninstall.sh configure.sh bin/LG_Buddy_Common scripts/build-release-bundle.sh scripts/test-gui-launch.sh scripts/test-installed-gui.sh scripts/test-installer-first-run.sh scripts/test-installer-gui-dependencies.sh scripts/test-installer-graphical-auth.sh scripts/test-release-bundle.sh scripts/test-release-gui-behavior.sh scripts/test-release-gui-journey.sh scripts/test-release-linkage.sh scripts/test-cross-version-upgrade.sh scripts/test-without-python.sh scripts/test-production-upgrade-canary.sh scripts/publish-release-assets.sh
+          bash -n data/kwin/setup.sh data/kwin/build.sh scripts/test-kwin-plugin.sh scripts/test-kwin-distro.sh scripts/test-kwin-setup.sh scripts/test-kwin-native-setup.sh scripts/test-gnome-extension.sh install.sh uninstall.sh configure.sh bin/LG_Buddy_Common scripts/build-release-bundle.sh scripts/test-gui-launch.sh scripts/test-installed-gui.sh scripts/test-installer-first-run.sh scripts/test-installer-gui-dependencies.sh scripts/test-installer-graphical-auth.sh scripts/test-release-bundle.sh scripts/test-release-gui-behavior.sh scripts/test-release-gui-journey.sh scripts/test-release-linkage.sh scripts/test-cross-version-upgrade.sh scripts/test-without-python.sh scripts/test-production-upgrade-canary.sh scripts/publish-release-assets.sh
           python3 -m py_compile scripts/test-release-gui-accessibility.py scripts/test-native-setup-recovery.py scripts/xwd_mean.py tools/mock_github_gui.py
 
       - name: Validate deterministic GUI GitHub fixture
@@ -656,25 +690,68 @@ jobs:
   bundle-smoke-test:
     runs-on: ubuntu-24.04
     timeout-minutes: 2
-    needs: [bundle-build, bundle-smoke-suites, debian-package, rpm-package, dnf-update-fedora44, rpm-update-fedora43-refusal, release-assets]
+    needs: [bundle-build, bundle-smoke-suites, bundle-supported-distros, plasma-setup, debian-package, rpm-package, dnf-update-fedora44, rpm-update-fedora43-refusal, release-assets]
     # Keep the required check failing when production or any suite fails,
     # times out, or is skipped, even after an upstream failure.
     if: ${{ always() }}
     steps:
-      - name: Require every bundle and native package smoke suite to pass
+      - name: Require every bundle, distribution and native package smoke suite to pass
         env:
           BUILD_RESULT: ${{ needs.bundle-build.result }}
           SMOKE_RESULT: ${{ needs.bundle-smoke-suites.result }}
+          DISTRO_RESULT: ${{ needs.bundle-supported-distros.result }}
+          PLASMA_RESULT: ${{ needs.plasma-setup.result }}
           DEBIAN_RESULT: ${{ needs.debian-package.result }}
           RPM_RESULT: ${{ needs.rpm-package.result }}
           DNF_RESULT: ${{ needs.dnf-update-fedora44.result }}
           RPM_REFUSAL_RESULT: ${{ needs.rpm-update-fedora43-refusal.result }}
           ASSETS_RESULT: ${{ needs.release-assets.result }}
         run: |
-          if [ "$BUILD_RESULT" != success ] || [ "$SMOKE_RESULT" != success ] || [ "$DEBIAN_RESULT" != success ] || [ "$RPM_RESULT" != success ] || [ "$DNF_RESULT" != success ] || [ "$RPM_REFUSAL_RESULT" != success ] || [ "$ASSETS_RESULT" != success ]; then
-            echo "Bundle build: $BUILD_RESULT; smoke suites: $SMOKE_RESULT; Debian package: $DEBIAN_RESULT; RPM package: $RPM_RESULT; DNF update: $DNF_RESULT; Fedora 43 refusal: $RPM_REFUSAL_RESULT; release assets: $ASSETS_RESULT" >&2
+          if [ "$BUILD_RESULT" != success ] || [ "$SMOKE_RESULT" != success ] || [ "$DISTRO_RESULT" != success ] || [ "$PLASMA_RESULT" != success ] || [ "$DEBIAN_RESULT" != success ] || [ "$RPM_RESULT" != success ] || [ "$DNF_RESULT" != success ] || [ "$RPM_REFUSAL_RESULT" != success ] || [ "$ASSETS_RESULT" != success ]; then
+            echo "Native Plasma setup: $PLASMA_RESULT" >&2
+            echo "Bundle build: $BUILD_RESULT; smoke suites: $SMOKE_RESULT; supported distributions: $DISTRO_RESULT; Debian package: $DEBIAN_RESULT; RPM package: $RPM_RESULT; DNF update: $DNF_RESULT; Fedora 43 refusal: $RPM_REFUSAL_RESULT; release assets: $ASSETS_RESULT" >&2
             exit 1
           fi
+
+  plasma-setup:
+    needs: bundle-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Arch current
+            image: archlinux:latest
+            setup: pacman -Syu --noconfirm --needed kwin gcc cmake make pkgconf extra-cmake-modules qt6-base qt6-declarative wayland libepoxy libdrm vulkan-headers dbus binutils sudo shadow util-linux mesa xkeyboard-config
+          - name: Fedora 44
+            image: fedora:44
+            setup: dnf install -y kwin kwin-devel gcc-c++ cmake make pkgconf-pkg-config extra-cmake-modules qt6-qtbase-devel qt6-qtdeclarative-devel wayland-devel libepoxy-devel libdrm-devel vulkan-headers dbus-daemon systemd binutils sudo shadow-utils util-linux mesa-dri-drivers xkeyboard-config
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Plasma test prerequisites
+        run: ${{ matrix.setup }}
+      - uses: actions/download-artifact@v7
+        with:
+          name: ci-release-bundle
+          path: dist
+      - name: Exercise native setup and repair with the real distro KWin
+        shell: bash
+        run: |
+          useradd --create-home tester
+          printf 'tester ALL=(root) NOPASSWD: ALL\n' > /etc/sudoers.d/lg-buddy-test
+          chmod 440 /etc/sudoers.d/lg-buddy-test
+          archive="$(find dist -maxdepth 1 -name '*.tar.gz' -print -quit)"
+          extraction="$(mktemp -d)"
+          tar --no-same-owner -C "$extraction" -xzf "$archive"
+          bundle="$(find "$extraction" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          install -m 755 "$bundle/lg-buddy" /usr/bin/lg-buddy
+          install -d /usr/lib/lg-buddy
+          cp -a "$bundle/docs/kwin" /usr/lib/lg-buddy/kwin
+          runuser -u tester -- dbus-run-session -- env LG_BUDDY_DISPOSABLE_TEST=1 \
+            bash scripts/test-kwin-native-setup.sh /usr/bin/lg-buddy /usr/lib/lg-buddy/kwin
 
   bundle-supported-distros:
     needs: bundle-build
