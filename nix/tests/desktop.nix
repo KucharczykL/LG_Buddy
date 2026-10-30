@@ -9,6 +9,27 @@ let
   inherit (pkgs) lib;
   plasma = desktop == "plasma";
   configPath = "/home/lgtest/.config/lg-buddy/config.env";
+  # A second real installed payload: keep the unchanged ELF contents but move
+  # CLI, GTK wrapper and GUI together so actual process paths prove selection.
+  changedPackage = pkgs.stdenvNoCC.mkDerivation {
+    name = "lg-buddy-desktop-next";
+    dontUnpack = true;
+    nativeBuildInputs = [ pkgs.wrapGAppsHook4 ];
+    buildInputs = [ pkgs.bash pkgs.gtk4 pkgs.libadwaita ];
+    dontWrapGApps = true;
+    installPhase = ''
+      cp -a ${package}/. "$out/"
+      chmod -R u+w "$out"
+      rm "$out/bin/lg-buddy-gui"
+      mv "$out/bin/.lg-buddy-gui-wrapped" "$out/bin/lg-buddy-gui"
+      substituteInPlace "$out/share/applications/io.github.staphylococcus.LGBuddy.desktop" \
+        "$out/lib/lg-buddy/kwin/setup.sh" \
+        "$out/share/gnome-shell/extensions/lg-buddy-brightness@staphylococcus.github.io/extension.js" \
+        --replace-fail ${lib.escapeShellArg (toString package)} "$out"
+    '';
+    preFixup = ''wrapGApp "$out/bin/lg-buddy-gui"'';
+    meta = package.meta;
+  };
   # Build the transport fixture separately: the installed runtime remains the
   # unmodified public package, including its ownership and source identity.
   fixture = package.overrideAttrs (_: {
@@ -69,11 +90,23 @@ pkgs.testers.runNixOSTest {
       wayland.enable = true;
     };
     services.desktopManager.gnome.enable = !plasma;
+    # Test-only access to the real Shell launcher, following nixpkgs' GNOME
+    # test convention. No production module enables this debugging interface.
+    systemd.user.services."org.gnome.Shell@" = lib.mkIf (!plasma) {
+      serviceConfig.ExecStart = [ "" "${pkgs.gnome-shell}/bin/gnome-shell --unsafe-mode" ];
+    };
     services.desktopManager.plasma6.enable = plasma;
     services.displayManager.defaultSession = if plasma then "plasma" else "gnome";
     services.displayManager.autoLogin = {
       enable = true;
       user = "lgtest";
+    };
+    systemd.user.services.qualification-launcher = lib.mkIf plasma {
+      wantedBy = [ "graphical-session.target" ];
+      partOf = [ "graphical-session.target" ];
+      after = [ "graphical-session.target" ];
+      environment.GI_TYPELIB_PATH = "${pkgs.glib}/lib/girepository-1.0";
+      serviceConfig.ExecStart = "${python}/bin/python ${./cached-launcher.py} /etc/profiles/per-user/lgtest/share/applications/io.github.staphylococcus.LGBuddy.desktop io.github.staphylococcus.NativeCachedLauncher";
     };
     networking.networkmanager.enable = true;
     users.users.lgtest = {
@@ -119,8 +152,13 @@ pkgs.testers.runNixOSTest {
         ExecStart = "${fixture}/bin/gui_journey_tv /var/lib/lg-buddy-test-tv";
       };
     };
-    specialisation.changed.configuration.home-manager.users.lgtest.services.lg-buddy.settings.screen.idle_timeout =
-      lib.mkForce 20;
+    specialisation.changed.configuration = {
+      services.lg-buddy.package = lib.mkForce changedPackage;
+      home-manager.users.lgtest.services.lg-buddy = {
+        package = lib.mkForce changedPackage;
+        settings.screen.idle_timeout = lib.mkForce 20;
+      };
+    };
     specialisation.removed.configuration.home-manager.users.lgtest.services.lg-buddy.settings = {
       screen.idle_timeout = lib.mkForce null;
       system.sleep_wake_policy = lib.mkForce null;
@@ -133,6 +171,7 @@ pkgs.testers.runNixOSTest {
   };
   testScript = ''
     import json
+    import shlex
     machine.start(allow_reboot=True)
     user = "runuser -u lgtest -- env XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus "
     cli = user + "${package}/bin/lg-buddy "
@@ -146,22 +185,37 @@ pkgs.testers.runNixOSTest {
     # profile generation before exercising ordinary nix-env generation rollback.
     machine.succeed("nix-env --profile /nix/var/nix/profiles/system --set " + base)
 
+    def shell_eval(code):
+        reply = json.loads(machine.succeed(user + "busctl --user --json=short call org.gnome.Shell /org/gnome/Shell org.gnome.Shell Eval s " + shlex.quote(code)))
+        success, result = reply["data"]
+        assert success, result
+        return json.loads(result) if result else None
+
     def session():
         machine.wait_for_unit("display-manager.service")
         machine.wait_for_file("/run/user/1000/wayland-0")
         machine.wait_until_succeeds(ctl + "is-active graphical-session.target LG_Buddy_screen.service", timeout=180)
         machine.copy_from_host("${uiScript}", "/tmp/desktop-ui.py")
+        if ${if plasma then "True" else "False"}:
+            machine.wait_until_succeeds(user + "busctl --user status io.github.staphylococcus.NativeCachedLauncher")
+        else:
+            machine.wait_until_succeeds(user + "busctl --user status org.gnome.Shell")
+            assert shell_eval("(async () => { const {default: Shell} = await import('gi://Shell'); global.lgBuddyCachedLauncher = Shell.AppSystem.get_default().lookup_app('io.github.staphylococcus.LGBuddy.desktop'); return global.lgBuddyCachedLauncher !== null; })()")
 
     def assessment(status):
         machine.wait_until_succeeds(ui + "assessment " + status, timeout=90)
 
-    def launch():
+    def launch(expected="${package}"):
         machine.send_key("esc")
-        machine.succeed(user + "systemd-run --user --collect --unit=qualification-gui ${package}/bin/lg-buddy-gui")
+        if ${if plasma then "True" else "False"}:
+            machine.succeed(user + "busctl --user call io.github.staphylococcus.NativeCachedLauncher /launcher io.github.staphylococcus.CachedLauncher Launch")
+        else:
+            assert shell_eval("global.lgBuddyCachedLauncher.activate(); true")
+        machine.wait_until_succeeds(ui + "identity " + expected, timeout=60)
 
     def quit_gui():
         machine.succeed(user + "gapplication action io.github.staphylococcus.LGBuddy quit")
-        machine.wait_until_fails(ctl + "is-active qualification-gui.service")
+        machine.wait_until_fails(user + "busctl --user status io.github.staphylococcus.LGBuddy")
 
     def tv():
         return json.loads(machine.succeed("cat /var/lib/lg-buddy-test-tv/state.json"))
@@ -227,7 +281,19 @@ pkgs.testers.runNixOSTest {
         assert machine.succeed(ctl + "show LG_Buddy_screen.service -p MainPID --value") != pid
         assert tv()["power_off_count"] == before["power_off_count"]
         assert machine.succeed("sha256sum ${configPath} " + token) == saved
+        # A package switch restarts both managers' services. The user verifier
+        # may have cached its initial snapshot before the system restart ends;
+        # exercise the documented read-only recheck after activation settles.
+        machine.wait_for_unit("LG_Buddy_lifecycle.service")
+        machine.wait_until_succeeds(ctl + "is-active LG_Buddy_screen.service")
+        machine.wait_until_succeeds(user + "busctl --user status io.github.Staphylococcus.LGBuddy", timeout=90)
+        machine.succeed(ui + "assessment Complete recheck")
         assessment("Complete")
+
+    with subtest("cached desktop launcher selects the new CLI and real GTK GUI without logout"):
+        launch("${changedPackage}")
+        print(machine.succeed(ui + "settings 20"))
+        quit_gui()
 
     with subtest("bootloader reboots into the selected generation with retained pairing"):
         boot = machine.succeed("cat /proc/sys/kernel/random/boot_id")
@@ -246,6 +312,8 @@ pkgs.testers.runNixOSTest {
         assert machine.succeed("readlink -f /nix/var/nix/profiles/system").strip() == base
         machine.succeed("/nix/var/nix/profiles/system/bin/switch-to-configuration switch")
         assert machine.succeed(cli + "settings get screen.idle_timeout").strip() == "10"
+        launch()
+        quit_gui()
         machine.succeed(base + "/specialisation/removed/bin/switch-to-configuration test")
         machine.succeed(cli + "settings set screen.idle_timeout 15")
         assert machine.succeed(cli + "settings get screen.idle_timeout").strip() == "15"

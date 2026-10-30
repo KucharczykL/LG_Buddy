@@ -9,24 +9,41 @@ let
   configPath = "/home/alice/TV settings%u$/config.env";
   # Exercise real publication/settings and real systemd managers. TV/session
   # operations are recording peers, so this test cannot contact a physical TV.
-  peer =
-    revision:
-    pkgs.writeShellScriptBin "lg-buddy" ''
-      set -eu
-      case "$1" in
-        config-binding|settings) exec ${package}/bin/lg-buddy "$@" ;;
-        monitor)
-          printf '%s\n' ${revision} >> "$HOME/monitor-starts"
-          printf '%s\n' "$LG_BUDDY_CONFIG" >> "$HOME/monitor-configs"
-          exec ${pkgs.coreutils}/bin/sleep infinity ;;
-        lifecycle)
-          printf '%s\n' "$LG_BUDDY_CONFIG" >> /run/lg-buddy-lifecycle-configs
-          exec ${pkgs.coreutils}/bin/sleep infinity ;;
-        *) printf '%s\t%s\n' "$*" "$LG_BUDDY_CONFIG" >> /run/lg-buddy-machine-actions ;;
-      esac
+  peer = revision:
+    let
+      runtime = pkgs.writeShellScript "lg-buddy" ''
+        set -eu
+        if [ "$#" -eq 0 ]; then
+          exec "$(${pkgs.coreutils}/bin/dirname "$(${pkgs.coreutils}/bin/readlink -f "$0")")/lg-buddy-gui"
+        fi
+        case "$1" in
+          config-binding|settings) exec ${package}/bin/lg-buddy "$@" ;;
+          monitor)
+            printf '%s\n' ${revision} >> "$HOME/monitor-starts"
+            printf '%s\n' "$LG_BUDDY_CONFIG" >> "$HOME/monitor-configs"
+            exec ${pkgs.coreutils}/bin/sleep infinity ;;
+          lifecycle)
+            printf '%s\n' "$LG_BUDDY_CONFIG" >> /run/lg-buddy-lifecycle-configs
+            exec ${pkgs.coreutils}/bin/sleep infinity ;;
+          *) printf '%s\t%s\n' "$*" "$LG_BUDDY_CONFIG" >> /run/lg-buddy-machine-actions ;;
+        esac
+      '';
+      gui = pkgs.writeShellScript "lg-buddy-gui" ''
+        printf '%s\t%s\n' ${revision} "$(${pkgs.coreutils}/bin/readlink -f "$0")" >> "$HOME/gui-launches"
+      '';
+    in
+    pkgs.runCommand "lg-buddy-${revision}" { meta.mainProgram = "lg-buddy"; } ''
+      install -Dm755 ${runtime} "$out/bin/lg-buddy"
+      install -Dm755 ${gui} "$out/bin/lg-buddy-gui"
+      install -Dm644 ${../../io.github.staphylococcus.LGBuddy.desktop} \
+        "$out/share/applications/io.github.staphylococcus.LGBuddy.desktop"
+      substituteInPlace "$out/share/applications/io.github.staphylococcus.LGBuddy.desktop" \
+        --replace-fail 'Exec=/usr/bin/lg-buddy' "Exec=$out/bin/lg-buddy"
     '';
   first = peer "first";
   second = peer "second";
+  python = pkgs.python3.withPackages (p: [ p.dbus-python p.pygobject3 ]);
+  decoy = pkgs.writeShellScriptBin "lg-buddy" "exit 77";
 in
 pkgs.testers.runNixOSTest {
   name = "lg-buddy-public-modules";
@@ -38,6 +55,7 @@ pkgs.testers.runNixOSTest {
     virtualisation.memorySize = 2048;
     virtualisation.cores = 2;
     networking.networkmanager.enable = true;
+    environment.systemPackages = [ python pkgs.glib ];
     users.users.alice = {
       isNormalUser = true;
       uid = 1000;
@@ -121,6 +139,15 @@ pkgs.testers.runNixOSTest {
     hook = "/etc/NetworkManager/dispatcher.d/pre-down.d/03userscript0001"
     base = machine.succeed("readlink -f /run/current-system").strip()
 
+    def cached_launchers():
+        for scope in ["System", "Home"]:
+            machine.succeed(user + "busctl --user call io.github.staphylococcus.CachedLauncher" + scope + " /launcher io.github.staphylococcus.CachedLauncher Launch")
+
+    def launched(revisions):
+        machine.wait_until_succeeds("test $(wc -l < /home/alice/gui-launches) -eq " + str(len(revisions)))
+        rows = [line.split("\t") for line in machine.succeed("cat /home/alice/gui-launches").splitlines()]
+        assert rows == [[revision, path + "/bin/lg-buddy-gui"] for revision, path in revisions], rows
+
     with subtest("fresh activation publishes regular selectors without user config or TV actions"):
         machine.succeed("test -f /etc/lg-buddy/config-path && test ! -L /etc/lg-buddy/config-path")
         assert machine.succeed("cat /etc/lg-buddy/config-path").strip() == config
@@ -137,6 +164,16 @@ pkgs.testers.runNixOSTest {
         for suffix in ["timer", "service"]:
             assert machine.succeed(ctl + "is-enabled LG_Buddy_update_check." + suffix + " || true").strip() == "masked"
             machine.fail(ctl + "start LG_Buddy_update_check." + suffix)
+
+    with subtest("cache both public launchers before any generation changes"):
+        for scope, desktop in [
+            ("System", "/run/current-system/sw/share/applications/io.github.staphylococcus.LGBuddy.desktop"),
+            ("Home", "/etc/profiles/per-user/alice/share/applications/io.github.staphylococcus.LGBuddy.desktop"),
+        ]:
+            machine.succeed(user + "systemd-run --user --setenv=PATH=${decoy}/bin --setenv=GI_TYPELIB_PATH=${pkgs.glib}/lib/girepository-1.0 --unit=cached-launcher-" + scope.lower() + " ${python}/bin/python ${./cached-launcher.py} " + desktop + " io.github.staphylococcus.CachedLauncher" + scope)
+            machine.wait_until_succeeds(user + "busctl --user status io.github.staphylococcus.CachedLauncher" + scope)
+        cached_launchers()
+        launched([("first", "${first}")] * 2)
 
     with subtest("first writable state retains credentials while declared keys are protected"):
         machine.succeed(user + "sh -c " + shlex.quote("umask 077; printf 'screen_idle_timeout=600\\n' > " + qconfig))
@@ -174,6 +211,8 @@ pkgs.testers.runNixOSTest {
         machine.wait_until_succeeds("test $(wc -l < /home/alice/monitor-starts) -eq 2", timeout=60)
         assert machine.succeed("cat /home/alice/monitor-starts").splitlines() == ["first", "second"]
         assert machine.succeed(cli + "settings get screen.idle_timeout").strip() == "120"
+        cached_launchers()
+        launched([("first", "${first}")] * 2 + [("second", "${second}")] * 2)
         assert machine.succeed("sha256sum " + qconfig + " " + shlex.quote(token)) == saved
         machine.fail("test -e /run/lg-buddy-machine-actions")
         for suffix in ["timer", "service"]:
@@ -186,6 +225,8 @@ pkgs.testers.runNixOSTest {
         machine.succeed(base + "/bin/switch-to-configuration test")
         machine.wait_until_succeeds("test $(wc -l < /home/alice/monitor-starts) -eq 3", timeout=60)
         assert machine.succeed(cli + "settings get screen.idle_timeout").strip() == "300"
+        cached_launchers()
+        launched([("first", "${first}")] * 2 + [("second", "${second}")] * 2 + [("first", "${first}")] * 2)
         machine.succeed(base + "/specialisation/removed/bin/switch-to-configuration test")
         assert machine.succeed(cli + "settings get screen.idle_timeout").strip() == "600"
         machine.fail("test -L " + shlex.quote(config + ".declarative.json"))

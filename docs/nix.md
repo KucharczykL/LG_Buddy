@@ -225,6 +225,19 @@ Update the LG Buddy flake input, then rebuild and activate the owning NixOS or
 Home Manager configuration, or update the owning Nix profile. Updating
 `flake.lock` alone does not replace the running application.
 
+The public modules install a launcher that resolves the active profile at launch:
+the NixOS system profile or Home Manager's configured user profile. CLI and GUI
+therefore follow package upgrades and generation rollback even if the desktop
+retains its cached launcher. The package's own desktop file remains bound to that
+specific package; the modules supply the profile-aware entry without changing
+the selected runtime, package identity, or configuration binding.
+
+An already-open window keeps its existing process until it is closed. Close and
+reopen LG Buddy after updating. When migrating from an older module whose
+launcher embedded a version-specific store path, the desktop may retain that old
+command until the next logout/login. That one-time session refresh loads the new
+launcher; subsequent generation changes do not require logout or a machine reboot.
+
 Setup does not require update-check units or activate a timer for a Nix-owned
 runtime, even when automatic checks were previously enabled. If an old timer is
 still enabled or running, setup asks you to disable and stop it through its
@@ -256,7 +269,7 @@ restored through the application's documented recovery flow.
 nix build .#lg-buddy
 nix flake check --no-build --all-systems
 nix build --print-build-logs --no-link .#checks.x86_64-linux.package
-nix build --print-build-logs --no-link .#checks.x86_64-linux.module-evaluation .#checks.x86_64-linux.modules
+nix build --print-build-logs --no-link .#checks.x86_64-linux.module-evaluation .#checks.x86_64-linux.launcher .#checks.x86_64-linux.modules
 nix build --print-build-logs --no-link .#checks.x86_64-linux.kwin
 bash scripts/test-nix-update-ownership.sh \
   "$(nix eval --raw .#packages.x86_64-linux.lg-buddy.outPath)"
@@ -286,9 +299,13 @@ activation and systemd managers in a disposable VM. Real CLI publication/setting
 are paired with recording TV/session command peers. They cover absent initial
 config, regular selectors, update masks, literal paths (including spaces and
 systemd percent specifiers), active refresh, inactive-session preservation,
-package/declaration switches, rollback, machine removal without a shutdown action,
+package/declaration switches, cached desktop launches across upgrade/rollback,
+machine removal without a shutdown action,
 installed startup/shutdown behavior, and preserved preferences/credentials without
-contacting a physical TV. The separate KWin check loads and queries the compiled plugin in
+contacting a physical TV. The standalone Home Manager launcher check covers both
+traditional and XDG profiles, unusual home-directory characters, package priority,
+and removal. Launch tests check the actual executable selected with a conflicting
+`lg-buddy` on `PATH`. The separate KWin check loads and queries the compiled plugin in
 the matching headless compositor. Existing package/GTK launch and external-update
 ownership checks remain in CI. aarch64 outputs evaluate; native aarch64 execution
 and full desktop/TV lifecycle qualification are separate acceptance evidence.
@@ -307,8 +324,11 @@ The runner uses the public modules, unchanged packaged runtime, real GTK,
 systemd and compositor, replacing only the TV with the loopback WebOS fixture.
 It begins without preferences or credentials and checks pairing, setup admission,
 managed/editor state, CLI mutations, external update ownership, native idle
-inhibition/restore, activation, bootloader power-cycle, generation rollback and
+inhibition/restore, activation, cached launcher CLI/GUI identity across package
+upgrade/rollback, bootloader power-cycle, generation rollback and
 declaration removal with retained credentials. Plasma also checks the live bridge.
+GNOME invokes the retained Shell application object; Plasma uses a retained GIO
+desktop launch object within its native session.
 The resulting test output contains screenshots, component and service identities,
 and transport observations. Physical TV approval, visible HDMI output and actual
 hardware sleep/wake and power behavior still require a host pass.

@@ -124,7 +124,13 @@ in
           message = "The NixOS and Home Manager LG Buddy modules must select the same user, configPath and package.";
         }
       ];
-      home.packages = [ cfg.package ];
+      home.packages = [
+        cfg.package
+        (pkgs.callPackage ../desktop-launcher.nix {
+          package = cfg.package;
+          executable = "${config.home.profileDirectory}/bin/lg-buddy";
+        })
+      ];
       home.extraBuilderCommands = ''
         ln -s ${manifest} "$out/lg-buddy-activation.json"
       '';
