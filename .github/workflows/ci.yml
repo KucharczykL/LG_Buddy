@@ -158,7 +158,7 @@ jobs:
 
       - name: Validate shell scripts
         run: |
-          bash -n data/kwin/setup.sh data/kwin/build.sh scripts/test-kwin-plugin.sh scripts/test-kwin-distro.sh scripts/test-kwin-setup.sh scripts/test-gnome-extension.sh install.sh uninstall.sh configure.sh bin/LG_Buddy_Common scripts/build-release-bundle.sh scripts/test-gui-launch.sh scripts/test-installed-gui.sh scripts/test-installer-first-run.sh scripts/test-installer-gui-dependencies.sh scripts/test-installer-graphical-auth.sh scripts/test-release-bundle.sh scripts/test-release-gui-behavior.sh scripts/test-release-gui-journey.sh scripts/test-release-linkage.sh scripts/test-cross-version-upgrade.sh scripts/test-without-python.sh scripts/test-production-upgrade-canary.sh scripts/publish-release-assets.sh
+          bash -n data/kwin/setup.sh data/kwin/build.sh scripts/test-kwin-plugin.sh scripts/test-kwin-distro.sh scripts/test-kwin-setup.sh scripts/test-kwin-native-setup.sh scripts/test-gnome-extension.sh install.sh uninstall.sh configure.sh bin/LG_Buddy_Common scripts/build-release-bundle.sh scripts/test-gui-launch.sh scripts/test-installed-gui.sh scripts/test-installer-first-run.sh scripts/test-installer-gui-dependencies.sh scripts/test-installer-graphical-auth.sh scripts/test-release-bundle.sh scripts/test-release-gui-behavior.sh scripts/test-release-gui-journey.sh scripts/test-release-linkage.sh scripts/test-cross-version-upgrade.sh scripts/test-without-python.sh scripts/test-production-upgrade-canary.sh scripts/publish-release-assets.sh
           python3 -m py_compile scripts/test-release-gui-accessibility.py scripts/test-native-setup-recovery.py scripts/xwd_mean.py tools/mock_github_gui.py
 
       - name: Validate deterministic GUI GitHub fixture
@@ -690,7 +690,7 @@ jobs:
   bundle-smoke-test:
     runs-on: ubuntu-24.04
     timeout-minutes: 2
-    needs: [bundle-build, bundle-smoke-suites, bundle-supported-distros, debian-package, rpm-package, dnf-update-fedora44, rpm-update-fedora43-refusal, release-assets]
+    needs: [bundle-build, bundle-smoke-suites, bundle-supported-distros, plasma-setup, debian-package, rpm-package, dnf-update-fedora44, rpm-update-fedora43-refusal, release-assets]
     # Keep the required check failing when production or any suite fails,
     # times out, or is skipped, even after an upstream failure.
     if: ${{ always() }}
@@ -700,16 +700,58 @@ jobs:
           BUILD_RESULT: ${{ needs.bundle-build.result }}
           SMOKE_RESULT: ${{ needs.bundle-smoke-suites.result }}
           DISTRO_RESULT: ${{ needs.bundle-supported-distros.result }}
+          PLASMA_RESULT: ${{ needs.plasma-setup.result }}
           DEBIAN_RESULT: ${{ needs.debian-package.result }}
           RPM_RESULT: ${{ needs.rpm-package.result }}
           DNF_RESULT: ${{ needs.dnf-update-fedora44.result }}
           RPM_REFUSAL_RESULT: ${{ needs.rpm-update-fedora43-refusal.result }}
           ASSETS_RESULT: ${{ needs.release-assets.result }}
         run: |
-          if [ "$BUILD_RESULT" != success ] || [ "$SMOKE_RESULT" != success ] || [ "$DISTRO_RESULT" != success ] || [ "$DEBIAN_RESULT" != success ] || [ "$RPM_RESULT" != success ] || [ "$DNF_RESULT" != success ] || [ "$RPM_REFUSAL_RESULT" != success ] || [ "$ASSETS_RESULT" != success ]; then
+          if [ "$BUILD_RESULT" != success ] || [ "$SMOKE_RESULT" != success ] || [ "$DISTRO_RESULT" != success ] || [ "$PLASMA_RESULT" != success ] || [ "$DEBIAN_RESULT" != success ] || [ "$RPM_RESULT" != success ] || [ "$DNF_RESULT" != success ] || [ "$RPM_REFUSAL_RESULT" != success ] || [ "$ASSETS_RESULT" != success ]; then
+            echo "Native Plasma setup: $PLASMA_RESULT" >&2
             echo "Bundle build: $BUILD_RESULT; smoke suites: $SMOKE_RESULT; supported distributions: $DISTRO_RESULT; Debian package: $DEBIAN_RESULT; RPM package: $RPM_RESULT; DNF update: $DNF_RESULT; Fedora 43 refusal: $RPM_REFUSAL_RESULT; release assets: $ASSETS_RESULT" >&2
             exit 1
           fi
+
+  plasma-setup:
+    needs: bundle-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Arch current
+            image: archlinux:latest
+            setup: pacman -Syu --noconfirm --needed kwin gcc cmake make pkgconf extra-cmake-modules qt6-base qt6-declarative wayland libepoxy libdrm vulkan-headers dbus binutils sudo shadow util-linux mesa xkeyboard-config
+          - name: Fedora 44
+            image: fedora:44
+            setup: dnf install -y kwin kwin-devel gcc-c++ cmake make pkgconf-pkg-config extra-cmake-modules qt6-qtbase-devel qt6-qtdeclarative-devel wayland-devel libepoxy-devel libdrm-devel vulkan-headers dbus-daemon systemd binutils sudo shadow-utils util-linux mesa-dri-drivers xkeyboard-config
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Plasma test prerequisites
+        run: ${{ matrix.setup }}
+      - uses: actions/download-artifact@v7
+        with:
+          name: ci-release-bundle
+          path: dist
+      - name: Exercise native setup and repair with the real distro KWin
+        shell: bash
+        run: |
+          useradd --create-home tester
+          printf 'tester ALL=(root) NOPASSWD: ALL\n' > /etc/sudoers.d/lg-buddy-test
+          chmod 440 /etc/sudoers.d/lg-buddy-test
+          archive="$(find dist -maxdepth 1 -name '*.tar.gz' -print -quit)"
+          extraction="$(mktemp -d)"
+          tar --no-same-owner -C "$extraction" -xzf "$archive"
+          bundle="$(find "$extraction" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          install -m 755 "$bundle/lg-buddy" /usr/bin/lg-buddy
+          install -d /usr/lib/lg-buddy
+          cp -a "$bundle/docs/kwin" /usr/lib/lg-buddy/kwin
+          runuser -u tester -- dbus-run-session -- env LG_BUDDY_DISPOSABLE_TEST=1 \
+            bash scripts/test-kwin-native-setup.sh /usr/bin/lg-buddy /usr/lib/lg-buddy/kwin
 
   bundle-supported-distros:
     needs: bundle-build

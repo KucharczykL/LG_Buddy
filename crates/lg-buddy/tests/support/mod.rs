@@ -1597,7 +1597,7 @@ pub fn python3_path() -> PathBuf {
         .clone()
 }
 
-fn dbus_daemon_path() -> PathBuf {
+pub fn dbus_daemon_path() -> PathBuf {
     static DBUS_DAEMON_PATH: OnceLock<PathBuf> = OnceLock::new();
 
     DBUS_DAEMON_PATH
