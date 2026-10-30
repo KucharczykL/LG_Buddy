@@ -1,7 +1,9 @@
 use crate::cucumber_support::world::LgBuddyWorld;
 use cucumber::{given, then, when};
 
-#[given(regex = r#"Plasma uses the "(compatibility symlink|real lib64|redirected Qt)" library layout"#)]
+#[given(
+    regex = r#"Plasma uses the "(compatibility symlink|real lib64|redirected Qt)" library layout"#
+)]
 fn plasma_layout(world: &mut LgBuddyWorld, layout: String) {
     world.plasma = Some(super::plasma::PlasmaSetup::new(&layout));
 }

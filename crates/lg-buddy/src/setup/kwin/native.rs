@@ -634,7 +634,11 @@ fn system_action(args: &[OsString]) -> Result<()> {
         return Err(1);
     }
     let uid: u32 = args[1].to_str().and_then(|s| s.parse().ok()).ok_or(1u8)?;
-    let root = Path::new(&args[2]);
+    // Existing receipts may retain the lib64 spelling from before discovery
+    // normalized the distribution's compatibility alias.
+    let root = Path::new(kwin_bridge::resolve_plugin_root(
+        args[2].to_str().ok_or(1u8)?,
+    ));
     let id = args[3].to_str().ok_or(1u8)?;
     if !owned_id(uid, id) || !supported_root(root) {
         return Err(1);

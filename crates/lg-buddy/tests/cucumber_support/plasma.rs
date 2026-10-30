@@ -358,7 +358,7 @@ fn kwin(address: &str, plugins: &Path, source: &str, stop: Arc<AtomicBool>) -> J
             });
         });
         let loader = crossroads.register("org.kde.KWin.Plugins", |builder| {
-            let load_connection = Arc::clone(&connection);
+            let load_connection = Arc::downgrade(&connection);
             let current = Arc::clone(&loaded);
             builder.method(
                 "LoadPlugin",
@@ -371,13 +371,15 @@ fn kwin(address: &str, plugins: &Path, source: &str, stop: Arc<AtomicBool>) -> J
                         ));
                     }
                     load_connection
+                        .upgrade()
+                        .unwrap()
                         .request_name(SERVICE, false, true, false)
                         .unwrap();
                     *current.lock().unwrap() = Some(id);
                     Ok((true,))
                 },
             );
-            let unload_connection = Arc::clone(&connection);
+            let unload_connection = Arc::downgrade(&connection);
             let current = Arc::clone(&loaded);
             builder.method(
                 "UnloadPlugin",
@@ -385,7 +387,11 @@ fn kwin(address: &str, plugins: &Path, source: &str, stop: Arc<AtomicBool>) -> J
                 (),
                 move |_, _: &mut (), (id,): (String,)| {
                     if current.lock().unwrap().as_ref() == Some(&id) {
-                        unload_connection.release_name(SERVICE).unwrap();
+                        unload_connection
+                            .upgrade()
+                            .unwrap()
+                            .release_name(SERVICE)
+                            .unwrap();
                         *current.lock().unwrap() = None;
                     }
                     Ok(())

@@ -2,12 +2,14 @@
 # Run only in a disposable distro container with an ordinary user, passwordless
 # sudo, KWin and its development files. Exercise setup without QT_PLUGIN_PATH.
 set -euo pipefail
+umask 022
 [ "${LG_BUDDY_DISPOSABLE_TEST:-}" = 1 ]
 [ "$(id -u)" -ne 0 ]
 runtime="${1:?installed runtime required}"
 payload="${2:?installed KWin payload required}"
 sudo -n true
-export XDG_RUNTIME_DIR="$(mktemp -d)"
+XDG_RUNTIME_DIR="$(mktemp -d)"
+export XDG_RUNTIME_DIR
 chmod 700 "$XDG_RUNTIME_DIR"
 export HOME="$XDG_RUNTIME_DIR/home"
 export XDG_CONFIG_HOME="$HOME/config" XDG_CACHE_HOME="$HOME/cache" XDG_DATA_HOME="$HOME/data" XDG_STATE_HOME="$HOME/state"
@@ -55,7 +57,10 @@ IFS=$'\t' read -r directory installed_id < "$receipt"
 [ "$(stat -c '%u:%a' "$directory/kwin/plugins/$installed_id.so")" = 0:644 ]
 
 "$runtime" kwin-setup --payload-dir "$payload" --remove
-! "$runtime" kwin-bridge check
+if "$runtime" kwin-bridge check; then
+    echo 'KWin bridge remains available after removal.' >&2
+    exit 1
+fi
 [ ! -e "$directory/kwin/plugins/$installed_id.so" ]
 
 # A stale artifact and receipt simulate integration needing repair after an
@@ -73,7 +78,10 @@ printf '%s\t%s\n' "$legacy_root" "$legacy_id" > "$receipts/$legacy_id.tsv"
 [ ! -e "$legacy_file" ]
 [ "$(find "$receipts" -name '*.tsv' | wc -l)" = 1 ]
 "$runtime" kwin-setup --payload-dir "$payload" --remove
-! "$runtime" kwin-bridge check
+if "$runtime" kwin-bridge check; then
+    echo 'KWin bridge remains available after removal.' >&2
+    exit 1
+fi
 [ "$(find "$receipts" -name '*.tsv' | wc -l)" = 0 ]
 [ ! -e "$directory/kwin/plugins/$installed_id.so" ]
 kill -0 "$kwin_pid"

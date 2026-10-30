@@ -723,10 +723,10 @@ jobs:
         include:
           - name: Arch current
             image: archlinux:latest
-            setup: pacman -Syu --noconfirm --needed kwin gcc cmake make pkgconf extra-cmake-modules qt6-base qt6-declarative wayland libepoxy libdrm vulkan-headers dbus binutils sudo shadow mesa xkeyboard-config
+            setup: pacman -Syu --noconfirm --needed kwin gcc cmake make pkgconf extra-cmake-modules qt6-base qt6-declarative wayland libepoxy libdrm vulkan-headers dbus binutils sudo shadow util-linux mesa xkeyboard-config
           - name: Fedora 44
             image: fedora:44
-            setup: dnf install -y kwin kwin-devel gcc-c++ cmake make pkgconf-pkg-config extra-cmake-modules qt6-qtbase-devel qt6-qtdeclarative-devel wayland-devel libepoxy-devel libdrm-devel vulkan-headers dbus-daemon systemd binutils sudo shadow-utils mesa-dri-drivers xkeyboard-config
+            setup: dnf install -y kwin kwin-devel gcc-c++ cmake make pkgconf-pkg-config extra-cmake-modules qt6-qtbase-devel qt6-qtdeclarative-devel wayland-devel libepoxy-devel libdrm-devel vulkan-headers dbus-daemon systemd binutils sudo shadow-utils util-linux mesa-dri-drivers xkeyboard-config
     container:
       image: ${{ matrix.image }}
     steps:
