@@ -73,6 +73,19 @@ fn plugin_directory(exists: impl Fn(&str) -> bool) -> Option<&'static str> {
     .find(|directory| exists(&format!("{directory}/kwin/plugins")))
 }
 
+/// Arch's lib64 compatibility alias must use the real supported loader root.
+/// Resolve only this exact alias; the installer still rejects other symlinks.
+pub(crate) fn resolve_plugin_root(root: &str) -> &str {
+    if root == "/usr/lib64/qt6/plugins"
+        && std::fs::read_link("/usr/lib64")
+            .is_ok_and(|target| matches!(target.to_str(), Some("lib" | "/usr/lib")))
+    {
+        "/usr/lib/qt6/plugins"
+    } else {
+        root
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct KWinInfo {
     pub version: String,
@@ -108,7 +121,7 @@ fn inspect_with(
     }
     let version = version_field(info, "KWin version:")?.to_owned();
     let qt_version = version_field(info, "Qt Version:")?.to_owned();
-    let plugin_directory = plugin_directory(exists);
+    let plugin_directory = plugin_directory(exists).map(resolve_plugin_root);
     if get_name_owner(bus, KWIN)? != owner {
         return Err(invalid("KWin changed while inspecting integration"));
     }
@@ -275,7 +288,10 @@ mod tests {
         .unwrap();
         assert_eq!(info.version, "6.7.4");
         assert_eq!(info.qt_version, "6.10.2");
-        assert_eq!(info.plugin_directory, Some("/usr/lib64/qt6/plugins"));
+        assert_eq!(
+            info.plugin_directory,
+            Some(resolve_plugin_root("/usr/lib64/qt6/plugins"))
+        );
         assert_eq!(
             bus.calls,
             ["GetNameOwner", "supportInformation", "GetNameOwner"]

@@ -23,6 +23,7 @@ struct Fixture {
     fail_state: Cell<bool>,
     fail_start: Cell<bool>,
     ownership: RefCell<Result<PathOwnership, PackageDatabaseError>>,
+    update_ownership: Cell<crate::upgrade_preflight::InstallationOwnership>,
     package_database: crate::upgrade_preflight::PackageDatabase,
 }
 impl Fixture {
@@ -59,6 +60,7 @@ impl Fixture {
             fail_state: Cell::new(false),
             fail_start: Cell::new(false),
             ownership: RefCell::new(Ok(PathOwnership::Unowned)),
+            update_ownership: Cell::new(crate::upgrade_preflight::InstallationOwnership::Bundle),
             package_database: fixture_package_database(Ok(PathOwnership::Unowned)),
         }
     }
@@ -71,6 +73,7 @@ impl Fixture {
             controller: self,
             authorization: crate::setup::flow::AuthorizationMode::Noninteractive,
             ownership: self.ownership.borrow().clone(),
+            update_ownership: self.update_ownership.get(),
             package_database: &self.package_database,
         }
     }
@@ -100,7 +103,12 @@ impl ServiceController for Fixture {
             },
         )
     }
-    fn user_service_config_path(&self, _: &str) -> Result<PathBuf, SettingsError> {
+    fn user_service_config_path(&self, unit: &str) -> Result<PathBuf, SettingsError> {
+        assert!(
+            !(self.update_ownership.get().externally_updated()
+                && unit == "LG_Buddy_update_check.service"),
+            "an external owner must not require an update-check binding"
+        );
         if !self.user_binding.get() {
             return Err(io_error("no loaded binding"));
         }
@@ -1424,4 +1432,73 @@ fn binding_directory_links_are_refused_before_authorization_in_both_layouts() {
             );
         }
     }
+}
+
+fn external_nix_fixture() -> Fixture {
+    let fixture = Fixture::new();
+    fixture
+        .update_ownership
+        .set(crate::upgrade_preflight::InstallationOwnership::NixStore);
+    fixture.system.set(true);
+    fixture.active.set(true);
+    fixture.running_user_binding.set(true);
+    fixture
+        .user
+        .borrow_mut()
+        .insert(SCREEN.into(), (true, true));
+    fs::write(
+        &fixture.config,
+        "updates_auto_check=enabled\nupdates_channel=prerelease\n",
+    )
+    .unwrap();
+    fixture
+}
+
+#[test]
+fn external_owner_needs_neither_update_unit_nor_binding_and_preserves_preferences() {
+    let fixture = external_nix_fixture();
+    let before = fs::read(&fixture.config).unwrap();
+    assert!(matches!(fixture.run(), StepResponse::Complete));
+    assert_eq!(fs::read(&fixture.config).unwrap(), before);
+    assert!(fixture.calls.borrow().is_empty());
+    assert!(!fixture.units.exists());
+    assert!(!fixture.root.join("etc").exists());
+}
+
+#[test]
+fn external_owner_reports_retained_active_timer_for_external_repair() {
+    for timer_state in [(true, true), (true, false), (false, true)] {
+        let fixture = external_nix_fixture();
+        fixture.user.borrow_mut().insert(TIMER.into(), timer_state);
+        let before = fs::read(&fixture.config).unwrap();
+        let StepResponse::Blocked(error) = fixture.run() else {
+            panic!("enabled or active external timer must require repair")
+        };
+        assert_eq!(
+            error.recovery,
+            SetupRecovery::new(
+                Cause::ManagedInstallation,
+                Boundary::SystemConfiguration,
+                Action::RepairExternally
+            )
+        );
+        assert_eq!(fixture.user.borrow().get(TIMER), Some(&timer_state));
+        assert!(fixture.calls.borrow().is_empty());
+        assert_eq!(fs::read(&fixture.config).unwrap(), before);
+
+        // The external owner disables/stops its timer; rechecking then succeeds.
+        fixture.user.borrow_mut().insert(TIMER.into(), (false, false));
+        assert!(matches!(fixture.run(), StepResponse::Complete));
+        assert!(fixture.calls.borrow().is_empty());
+        assert!(!fixture.units.exists());
+        assert_eq!(fs::read(&fixture.config).unwrap(), before);
+    }
+}
+
+#[test]
+fn external_owner_still_requires_correct_screen_and_machine_services() {
+    let fixture = external_nix_fixture();
+    fixture.system_binding.set(false);
+    assert!(matches!(fixture.run(), StepResponse::Blocked(_)));
+    assert!(fixture.calls.borrow().is_empty());
 }

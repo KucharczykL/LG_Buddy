@@ -1,6 +1,43 @@
 use crate::cucumber_support::world::LgBuddyWorld;
 use cucumber::{given, then, when};
 
+#[given(
+    regex = r#"Plasma uses the "(compatibility symlink|real lib64|redirected Qt)" library layout"#
+)]
+fn plasma_layout(world: &mut LgBuddyWorld, layout: String) {
+    world.plasma = Some(super::plasma::PlasmaSetup::new(&layout));
+}
+
+#[given("a previous Plasma integration has a legacy installation receipt")]
+fn legacy_plasma_installation(world: &mut LgBuddyWorld) {
+    world.plasma.as_ref().unwrap().previous_installation();
+}
+
+#[when("I complete Plasma integration setup")]
+fn complete_plasma_setup(world: &mut LgBuddyWorld) {
+    world.plasma.as_mut().unwrap().setup("--foreground");
+}
+
+#[when("I remove Plasma integration")]
+fn remove_plasma_setup(world: &mut LgBuddyWorld) {
+    world.plasma.as_mut().unwrap().setup("--remove");
+}
+
+#[then("Plasma integration is available with one installed plugin")]
+fn plasma_setup_available(world: &mut LgBuddyWorld) {
+    world.plasma.as_ref().unwrap().assert_available();
+}
+
+#[then("Plasma integration and its installation receipts are removed")]
+fn plasma_setup_removed(world: &mut LgBuddyWorld) {
+    world.plasma.as_ref().unwrap().assert_removed();
+}
+
+#[then("Plasma setup refuses the redirected directory without changing it")]
+fn plasma_setup_refused(world: &mut LgBuddyWorld) {
+    world.plasma.as_ref().unwrap().assert_refused();
+}
+
 #[given(regex = r#"a temporary LG Buddy config using input (HDMI_[1-4])"#)]
 fn temporary_config(world: &mut LgBuddyWorld, input: String) {
     world.create_config(&input);

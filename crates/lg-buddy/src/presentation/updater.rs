@@ -18,6 +18,22 @@ impl UpdaterPresentation {
         let check = settings.update_check();
         let install = settings.update_install();
         let active = install.busy() || install.cancel_action().is_some();
+        if !active {
+            if let Some(ownership) = check
+                .installation_ownership()
+                .filter(|owner| owner.externally_updated())
+            {
+                return Self {
+                    title: "Managed externally".into(),
+                    description: crate::update_install::update_install_guidance(ownership).unwrap(),
+                    action: SettingsAction::new(
+                        "Managed externally",
+                        false,
+                        SettingsIntent::CheckForUpdates,
+                    ),
+                };
+            }
+        }
         if let Some(action) = install
             .action()
             .filter(|action| action.intent() == SettingsIntent::RelaunchUpdatedApplication)
@@ -199,11 +215,14 @@ mod tests {
                     row.description()
                 );
                 assert_eq!(row.action().intent(), SettingsIntent::CheckForUpdates);
-                assert!(row.action().enabled());
+                assert_eq!(row.action().enabled(), !ownership.externally_updated());
                 assert!(app
                     .handle_intent(SettingsIntent::PrepareUpdateInstall)
                     .is_none());
-                assert!(app.handle_intent(SettingsIntent::CheckForUpdates).is_some());
+                assert_eq!(
+                    app.handle_intent(SettingsIntent::CheckForUpdates).is_some(),
+                    !ownership.externally_updated()
+                );
             }
         }
     }
@@ -278,7 +297,7 @@ mod tests {
         let row = app.presentation().updater();
         assert!(row.description().contains("pacman"));
         assert_eq!(row.action().intent(), SettingsIntent::CheckForUpdates);
-        assert!(row.action().enabled());
+        assert!(!row.action().enabled());
         assert!(!app.is_mutating());
         assert!(app
             .handle_intent(SettingsIntent::ConfirmUpdateInstall)
@@ -287,7 +306,16 @@ mod tests {
             .handle_intent(SettingsIntent::PrepareUpdateInstall)
             .is_none());
 
-        // A fresh check may observe that the installation is a bundle again.
+        // A refresh must observe an application-owned installation before checking again.
+        let refresh = app.handle_intent(SettingsIntent::Refresh).unwrap();
+        app.complete_snapshot(
+            refresh.read_operation().unwrap(),
+            Ok(crate::settings_view::SettingsReadSnapshot {
+                groups: groups("stable"),
+                installation_ownership: Some(InstallationOwnership::Bundle),
+            }),
+        )
+        .unwrap();
         complete_check(&mut app, Ok(report(UpdateChannel::Stable, true)));
         assert_eq!(
             app.presentation().updater().action().intent(),
@@ -404,5 +432,100 @@ mod tests {
 
         let second = complete_check(&mut app, Err(error()));
         assert_eq!(second.update_notice(), first.update_notice());
+    }
+}
+
+#[cfg(test)]
+mod external_snapshot_tests {
+    use crate::presentation::settings::SettingsPresentation;
+    use crate::presentation::update_check::UpdateCheckReport;
+    use crate::settings::ConfigEnvReader;
+    use crate::settings_view::{
+        BehaviorSetting, SettingsApplication, SettingsIntent, SettingsReadSnapshot,
+    };
+    use crate::updates::UpdateChannel;
+    use crate::upgrade_preflight::InstallationOwnership;
+
+    fn snapshot(owner: InstallationOwnership) -> SettingsReadSnapshot {
+        let store = ConfigEnvReader::parse(
+            "/fixture/settings.env",
+            "updates_auto_check=enabled\nupdates_channel=prerelease\n",
+        )
+        .into_store();
+        SettingsReadSnapshot {
+            groups: SettingsPresentation::from_store(&store).groups().to_vec(),
+            installation_ownership: Some(owner),
+        }
+    }
+
+    #[test]
+    fn initial_external_owner_hides_inapplicable_controls_and_survives_refresh() {
+        let (mut app, opening) = SettingsApplication::open();
+        app.complete_snapshot(
+            opening.read_operation().unwrap(),
+            Ok(snapshot(InstallationOwnership::NixStore)),
+        )
+        .unwrap();
+        for available in [false, true] {
+            app.set_controls_available(available);
+            let presentation = app.presentation();
+            assert_eq!(presentation.updater().title(), "Managed externally");
+            assert!(presentation
+                .updater()
+                .description()
+                .contains("rebuild and activate"));
+            assert!(!presentation.updater().action().enabled());
+            assert!(!presentation.row_visible(BehaviorSetting::UpdatesAutoCheck));
+            assert!(!presentation.row_visible(BehaviorSetting::UpdatesChannel));
+            assert!(presentation.row_visible(BehaviorSetting::ScreenIdleBlank));
+            assert!(app.handle_intent(SettingsIntent::CheckForUpdates).is_none());
+            assert!(app
+                .handle_intent(SettingsIntent::PrepareUpdateInstall)
+                .is_none());
+        }
+        let refresh = app.handle_intent(SettingsIntent::Refresh).unwrap();
+        app.complete_snapshot(
+            refresh.read_operation().unwrap(),
+            Ok(snapshot(InstallationOwnership::Bundle)),
+        )
+        .unwrap();
+        assert!(app
+            .presentation()
+            .row_visible(BehaviorSetting::UpdatesAutoCheck));
+        assert!(app
+            .presentation()
+            .row_visible(BehaviorSetting::UpdatesChannel));
+        assert!(app.presentation().updater().action().enabled());
+    }
+
+    #[test]
+    fn check_discovering_external_ownership_reports_guidance_instead_of_up_to_date() {
+        let (mut app, opening) = SettingsApplication::open();
+        app.complete_snapshot(
+            opening.read_operation().unwrap(),
+            Ok(snapshot(InstallationOwnership::Bundle)),
+        )
+        .unwrap();
+        let checking = app.handle_intent(SettingsIntent::CheckForUpdates).unwrap();
+        let completed = app
+            .complete_update_check(
+                checking.update_check_operation().unwrap(),
+                Ok(UpdateCheckReport {
+                    installation_ownership: InstallationOwnership::NixStore,
+                    installed_version: "2.0.0".into(),
+                    channel: UpdateChannel::Prerelease,
+                    update_available: false,
+                    warning: None,
+                }),
+            )
+            .unwrap();
+        let notice = completed.update_notice().unwrap();
+        assert_eq!(notice.title(), "Managed externally");
+        assert!(notice.details().unwrap().contains("rebuild and activate"));
+        assert!(!app.presentation().updater().action().enabled());
+        assert!(app.handle_intent(SettingsIntent::CheckForUpdates).is_none());
+        assert!(app
+            .handle_intent(SettingsIntent::PrepareUpdateInstall)
+            .is_none());
     }
 }

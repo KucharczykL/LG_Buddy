@@ -60,6 +60,10 @@ pub enum UserUnitEnableOutcome {
 }
 
 pub trait ServiceController {
+    /// Observation only; fake controllers retain the historical bundle behavior.
+    fn update_ownership(&self) -> crate::upgrade_preflight::InstallationOwnership {
+        crate::upgrade_preflight::InstallationOwnership::Bundle
+    }
     /// Inject a flow-owned permission session without changing controllers
     /// that do not perform privileged subprocess work.
     fn with_setup_authorization<T>(
@@ -106,6 +110,14 @@ pub trait ServiceController {
     }
 
     fn restart_user_service(&self, service: &str) -> Result<(), SettingsError>;
+
+    /// Let the manager restart only a currently active unit. A separate
+    /// activity check followed by ordinary restart can start a stopped unit.
+    fn try_restart_user_service(&self, _service: &str) -> Result<(), SettingsError> {
+        Err(SettingsError::Activation {
+            message: "conditional user service restart is unavailable".into(),
+        })
+    }
 
     fn stop_user_service(&self, _service: &str) -> Result<(), SettingsError> {
         Err(SettingsError::Activation {
@@ -255,6 +267,9 @@ impl SystemdUserServiceController {
 }
 
 impl ServiceController for SystemdUserServiceController {
+    fn update_ownership(&self) -> crate::upgrade_preflight::InstallationOwnership {
+        crate::update_install::gui_update_ownership()
+    }
     fn with_setup_authorization<T>(
         &self,
         lock: Arc<File>,
@@ -306,6 +321,10 @@ impl ServiceController for SystemdUserServiceController {
 
     fn restart_user_service(&self, service: &str) -> Result<(), SettingsError> {
         self.run_user_systemctl(&["restart", service])
+    }
+
+    fn try_restart_user_service(&self, service: &str) -> Result<(), SettingsError> {
+        self.run_user_systemctl(&["try-restart", service])
     }
 
     fn stop_user_service(&self, service: &str) -> Result<(), SettingsError> {

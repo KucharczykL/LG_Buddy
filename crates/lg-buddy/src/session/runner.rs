@@ -17,9 +17,8 @@ use crate::backend::{
     BackendProbe, BackendResolution, BackendSelectionError, SystemBackendProbe,
 };
 use crate::config::{
-    load_config, load_current_config, normalize_idle_timeout_secs, parse_config_entries,
-    parse_idle_timeout_secs, resolve_config_path_from_env, ConfigPathError, ScreenBackend,
-    ScreenIdleBlankPolicy, DEFAULT_IDLE_TIMEOUT,
+    load_config, load_current_config, normalize_idle_timeout_secs, parse_idle_timeout_secs,
+    resolve_config_path_from_env, ConfigPathError, ScreenBackend, DEFAULT_IDLE_TIMEOUT,
 };
 use crate::events::{EventSource, RuntimeEvent};
 use crate::inhibition::Inhibition;
@@ -56,6 +55,7 @@ const GAMEPAD_ACTIVITY_SEND_INTERVAL: Duration = Duration::from_millis(500);
 const LOGIND_LIFECYCLE_PROCESS_INTERVAL: Duration = Duration::from_secs(5);
 const LOGIND_LIFECYCLE_TEST_PROCESS_INTERVAL: Duration = Duration::from_millis(50);
 const SESSION_AGENT_BACKEND_RETRY_INTERVAL: Duration = Duration::from_secs(30);
+const SESSION_AGENT_CONFIG_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 const LIFECYCLE_MONITOR_TEST_TIMEOUT_SECS_ENV: &str =
     "LG_BUDDY_LIFECYCLE_MONITOR_TEST_TIMEOUT_SECS";
 const LIFECYCLE_MONITOR_TEST_EVENT_LIMIT_ENV: &str = "LG_BUDDY_LIFECYCLE_MONITOR_TEST_EVENT_LIMIT";
@@ -364,13 +364,6 @@ impl<E: SessionActionExecutor> SessionEventDispatcher<E> {
 }
 
 pub fn run_monitor<W: Write>(writer: &mut W) -> Result<(), RunError> {
-    if let Err(error) = crate::startup::backend_start() {
-        writeln!(writer, "LG Buddy Monitor: setup requires repair: {error}")?;
-        let _session_service = spawn_session_notification_service(MonitorDiagnostics::default())
-            .map_err(|error| RunError::Policy(error.to_string()))?;
-        return run_passive_session_agent(writer)
-            .map_err(|error| RunError::Policy(error.to_string()));
-    }
     run_monitor_with_executor(writer, RuntimeActionExecutor::default()).map_err(|err| match err {
         SessionRunnerError::BackendSelection(err) => RunError::BackendSelection(err),
         SessionRunnerError::BackendDetection(err) => RunError::BackendDetection(err),
@@ -611,86 +604,67 @@ fn run_monitor_with_executor<W: Write, E: SessionActionExecutor>(
     executor: E,
 ) -> Result<(), SessionRunnerError> {
     let snapshot = MonitorDiagnostics::default();
-    let screen_idle_blank_enabled = match screen_idle_blank_enabled_from_config() {
-        Ok(enabled) => enabled,
-        Err(error) => {
-            writeln!(writer, "LG Buddy Monitor: setup requires repair: {error}")?;
-            false
+    let started = Instant::now();
+    let test_timeout = monitor_test_timeout();
+    let mut executor = Some(executor);
+    let mut probe = SystemBackendProbe::default();
+    // First pairing may finish after the setup endpoint has started threads.
+    // Consume any inherited socket now, while environment mutation is safe,
+    // and retain its adapter until configuration permits monitoring.
+    if std::env::var_os("WAYLAND_SOCKET").is_some() {
+        let _ = probe.wayland_capabilities();
+    }
+    let mut session_service = None;
+    let mut passive_reason = None;
+
+    loop {
+        if test_timeout_reached(started, test_timeout) {
+            return Ok(());
         }
-    };
-    if !screen_idle_blank_enabled {
-        snapshot.waiting(None, "idle blanking disabled; passive session service");
-        let _session_service = match spawn_session_notification_service(snapshot.clone()) {
-            Ok(service) => Some(service),
-            Err(err) => {
-                writeln!(
-                    writer,
-                    "LG Buddy Monitor: session notification service unavailable: {err}"
-                )?;
+        let prepared = match configured_monitor_backend() {
+            Ok(Some(configured)) => {
+                // Keep the probe across retries: an inherited WAYLAND_SOCKET is
+                // consumed only once. On configured startup, probe before the
+                // session service starts threads that inspect the environment.
+                let resolution = prepare_monitor_backend(&mut probe, configured);
+                snapshot.waiting(Some(configured), "starting native discovery");
+                Some((configured, resolution))
+            }
+            result => {
+                let reason = match result {
+                    Ok(None) => "screen idle blanking is disabled by config.".to_owned(),
+                    Err(error) => format!("setup requires repair: {error}"),
+                    Ok(Some(_)) => unreachable!(),
+                };
+                snapshot.waiting(None, &reason);
+                if passive_reason.as_ref() != Some(&reason) {
+                    writeln!(writer, "LG Buddy Monitor: {reason}")?;
+                    passive_reason = Some(reason);
+                }
                 None
             }
         };
-        writeln!(
-            writer,
-            "LG Buddy Monitor: screen idle blanking is disabled by config."
-        )?;
-        return run_passive_session_agent(writer);
-    }
 
-    let initial_configured = match configured_backend_from_env_or_config() {
-        Ok(backend) => backend,
-        Err(error) => {
-            writeln!(writer, "LG Buddy Monitor: setup requires repair: {error}")?;
-            let _session_service =
-                spawn_session_notification_service(snapshot).map_err(|error| {
-                    SessionRunnerError::Failed {
-                        backend: ScreenBackend::Auto,
-                        message: error.to_string(),
-                    }
-                })?;
-            return run_passive_session_agent(writer);
-        }
-    };
-    let mut executor = Some(executor);
-    let started = Instant::now();
-    let test_timeout = monitor_test_timeout();
-    let mut probe = SystemBackendProbe::default();
-    let initial_resolution = prepare_monitor_backend(&mut probe, initial_configured);
-    snapshot.waiting(Some(initial_configured), "starting native discovery");
-    let mut initial_attempt = Some((initial_configured, initial_resolution));
-
-    // Native probing must consume an inherited WAYLAND_SOCKET before this
-    // thread starts. The same probe is retained for every later retry so the
-    // native retries cannot forget that one-shot socket state.
-    let _session_service = match spawn_session_notification_service(snapshot.clone()) {
-        Ok(service) => Some(service),
-        Err(err) => {
-            writeln!(
-                writer,
-                "LG Buddy Monitor: session notification service unavailable: {err}"
-            )?;
-            None
-        }
-    };
-
-    loop {
-        let (configured, resolution) = match initial_attempt.take() {
-            Some(attempt) => attempt,
-            None => {
-                if test_timeout_reached(started, test_timeout) {
-                    return Ok(());
-                }
-                let configured = match configured_backend_from_env_or_config() {
-                    Ok(backend) => backend,
-                    Err(error) => {
-                        writeln!(writer, "LG Buddy Monitor: setup requires repair: {error}")?;
-                        return run_passive_session_agent(writer);
-                    }
-                };
-                let resolution = prepare_monitor_backend(&mut probe, configured);
-                (configured, resolution)
+        // Retain the same setup endpoint while configuration becomes ready;
+        // pairing must not require a service restart or replace its D-Bus owner.
+        if session_service.is_none() {
+            let service = spawn_session_notification_service(snapshot.clone());
+            if let Err(error) = &service {
+                writeln!(
+                    writer,
+                    "LG Buddy Monitor: session notification service unavailable: {error}"
+                )?;
             }
+            session_service = Some(service);
+        }
+        let Some((configured, resolution)) = prepared else {
+            thread::sleep(
+                SESSION_AGENT_CONFIG_RETRY_INTERVAL
+                    .min(passive_sleep_duration(started, test_timeout)),
+            );
+            continue;
         };
+        passive_reason = None;
 
         match resolution {
             Ok((resolution, mut wayland_source)) => {
@@ -780,26 +754,38 @@ fn screen_idle_blank_enabled_from_config() -> Result<bool, SessionRunnerError> {
             config_path.display()
         ),
     })?;
-    let entries = parse_config_entries(&contents);
-    let policy = entries
-        .get("screen_idle_blank")
-        .and_then(|value| value.parse::<ScreenIdleBlankPolicy>().ok())
-        .unwrap_or(ScreenIdleBlankPolicy::Enabled);
-
-    Ok(policy.is_enabled())
+    let policy = crate::settings::SettingsStore::from_reader_with_declarations(
+        crate::settings::ConfigEnvReader::parse(&config_path, &contents),
+    )
+    .and_then(|store| store.effective_by_name("screen.idle_blank"))
+    .map_err(|err| SessionRunnerError::Failed {
+        backend: ScreenBackend::Auto,
+        message: err.to_string(),
+    })?;
+    // Retain the existing enabled fallback for an invalid saved preference;
+    // invalid declarations fail at load instead of bypassing management.
+    Ok(policy
+        .value()
+        .and_then(crate::settings::SettingValue::as_enum)
+        != Some("disabled"))
 }
 
-fn run_passive_session_agent<W: Write>(_writer: &mut W) -> Result<(), SessionRunnerError> {
-    let started = Instant::now();
-    let test_timeout = monitor_test_timeout();
-
-    loop {
-        if test_timeout_reached(started, test_timeout) {
-            return Ok(());
-        }
-
-        thread::sleep(passive_sleep_duration(started, test_timeout));
+fn configured_monitor_backend() -> Result<Option<ScreenBackend>, SessionRunnerError> {
+    let config_path =
+        crate::startup::backend_start().map_err(|error| SessionRunnerError::Failed {
+            backend: ScreenBackend::Auto,
+            message: error.to_string(),
+        })?;
+    load_current_config(&config_path).map_err(|error| SessionRunnerError::Failed {
+        backend: ScreenBackend::Auto,
+        message: error.to_string(),
+    })?;
+    if !screen_idle_blank_enabled_from_config()? {
+        return Ok(None);
     }
+    configured_backend_from_env_or_config()
+        .map(Some)
+        .map_err(SessionRunnerError::BackendSelection)
 }
 
 fn wait_for_backend_retry_or_test_timeout(started: Instant, test_timeout: Option<Duration>) {
@@ -941,7 +927,7 @@ where
             })?;
             Some(Inhibition::new(
                 &current.config,
-                Duration::from_millis(resolve_idle_timeout_ms()),
+                Duration::from_millis(resolve_idle_timeout_ms()?),
                 vec![Arc::new(GnomeInhibition::default())],
                 vec![
                     Box::new(PowerDevilInhibition::default()),
@@ -993,7 +979,7 @@ where
     L: FnOnce(mpsc::Sender<RunnerMessage>) -> Option<LogindLockObserver>,
     D: FnOnce(mpsc::Sender<RunnerMessage>) -> Option<DpmsBlankObserver>,
 {
-    let blank_after = Duration::from_millis(resolve_idle_timeout_ms());
+    let blank_after = Duration::from_millis(resolve_idle_timeout_ms()?);
     let power_off_after = resolve_timed_power_off_after();
     let started_at = Instant::now();
     let marker_exists = session_screen_ownership_marker_exists(backend)?;
@@ -1211,20 +1197,44 @@ where
     Ok(())
 }
 
-fn resolve_idle_timeout_secs() -> u64 {
-    normalize_idle_timeout_secs(
-        std::env::var("LG_BUDDY_IDLE_TIMEOUT")
-            .ok()
-            .and_then(|value| parse_idle_timeout_secs(&value))
+fn resolve_idle_timeout_secs() -> Result<u64, SessionRunnerError> {
+    let path = resolve_config_path_from_env().ok();
+    resolve_idle_timeout_from_sources(
+        std::env::var("LG_BUDDY_IDLE_TIMEOUT").ok().as_deref(),
+        path.as_deref(),
+    )
+}
+
+fn resolve_idle_timeout_from_sources(
+    override_value: Option<&str>,
+    path: Option<&Path>,
+) -> Result<u64, SessionRunnerError> {
+    if let Some(path) = path {
+        let declarations =
+            crate::config::declarative::Declarations::load(path).map_err(|error| {
+                SessionRunnerError::Failed {
+                    backend: ScreenBackend::Auto,
+                    message: error.to_string(),
+                }
+            })?;
+        if let Some(value) = declarations
+            .and_then(|d| d.value("screen.idle_timeout"))
+            .and_then(crate::settings::SettingValue::as_integer)
+        {
+            return Ok(value as u64);
+        }
+    }
+    Ok(normalize_idle_timeout_secs(
+        override_value
+            .and_then(parse_idle_timeout_secs)
             .or_else(|| {
-                let path = resolve_config_path_from_env().ok()?;
-                load_config(&path)
+                load_config(path?)
                     .ok()
                     .map(|config| config.screen_idle_timeout)
             })
             .map(u128::from)
             .unwrap_or(u128::from(DEFAULT_IDLE_TIMEOUT)),
-    )
+    ))
 }
 
 fn session_screen_ownership_marker_exists(
@@ -1238,8 +1248,47 @@ fn session_screen_ownership_marker_exists(
         })
 }
 
-fn resolve_idle_timeout_ms() -> u64 {
-    resolve_idle_timeout_secs().saturating_mul(1000)
+fn resolve_idle_timeout_ms() -> Result<u64, SessionRunnerError> {
+    Ok(resolve_idle_timeout_secs()?.saturating_mul(1000))
+}
+
+#[cfg(test)]
+mod declarative_timeout_tests {
+    use super::*;
+    #[test]
+    fn declared_timeout_wins_over_environment_and_bad_declarations_do_not_fall_back() {
+        let path = std::env::temp_dir().join(format!(
+            "lg-buddy-declared-timeout-{}-{}.env",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path,"tvs_primary_ip=192.0.2.1\ntvs_primary_mac=02:00:00:00:00:01\ntvs_primary_input=HDMI_1\ntvs_primary_platform=lg_webos\nscreen_idle_timeout=600\n").unwrap();
+        let binding = crate::config::declarative::binding_path(&path).unwrap();
+        std::fs::write(
+            &binding,
+            r#"{"version":1,"settings":{"screen.idle_timeout":300}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_idle_timeout_from_sources(Some("450"), Some(&path)).unwrap(),
+            300
+        );
+        std::fs::write(&binding, "{incomplete").unwrap();
+        assert!(resolve_idle_timeout_from_sources(Some("450"), Some(&path)).is_err());
+        std::fs::remove_file(binding).unwrap();
+        assert_eq!(
+            resolve_idle_timeout_from_sources(Some("450"), Some(&path)).unwrap(),
+            450
+        );
+        assert_eq!(
+            resolve_idle_timeout_from_sources(None, Some(&path)).unwrap(),
+            600
+        );
+        std::fs::remove_file(path).unwrap();
+    }
 }
 
 fn resolve_timed_power_off_after() -> Duration {

@@ -25,6 +25,8 @@ runCommand "lg-buddy-package-check" {
   ${package}/bin/lg-buddy-gui --version > gui-version
   cmp cli-version gui-version
   grep -Fx 'version: ${package.version}' cli-version
+  grep -Fx 'channel: ${package.releaseChannel}' cli-version
+  grep -Fx 'commit: ${package.LG_BUDDY_BUILD_COMMIT}' cli-version
 
   test -x ${package}/bin/.lg-buddy-gui-wrapped
   grep -Fx 'Exec=${package}/bin/lg-buddy' \

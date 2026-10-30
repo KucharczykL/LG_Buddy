@@ -625,6 +625,9 @@ fn refused_ownership_guidance(ownership: InstallationOwnership) -> String {
 
 pub(crate) fn update_install_guidance(ownership: InstallationOwnership) -> Option<String> {
     match ownership {
+        InstallationOwnership::NixStore => Some(
+            "This installation is managed by Nix. Update the LG Buddy flake input, then rebuild and activate your NixOS or Home Manager configuration (or update the owning Nix profile). Updating flake.lock alone does not replace the running application. LG Buddy's update checks and installer are not used for this installation.".into(),
+        ),
         InstallationOwnership::Bundle | InstallationOwnership::Package { family: PackageFamily::Dpkg | PackageFamily::Rpm } => None,
         InstallationOwnership::Package { family } => Some(format!(
             "This installation is managed by {}. Use that package manager to install a suitable verified package from your package source or maintainer. LG Buddy cannot install package updates in this version.",
@@ -678,6 +681,9 @@ fn check_update_delivery(
 }
 
 fn system_update_preflight(require_gui: bool) -> Result<UpdateDelivery, UpdateInstallError> {
+    if let Some(ownership) = crate::upgrade_preflight::running_nix_ownership() {
+        return Err(UpdateInstallError::OwnershipRefused(ownership));
+    }
     let delivery = check_update_delivery(
         PackageDatabase::system().owner_of(&installed_binary_path()),
         || {

@@ -13,6 +13,7 @@ use lg_buddy::settings_view::UpdateNotice;
 pub(crate) struct SettingsView {
     root: gtk::Stack,
     page: adw::PreferencesPage,
+    managed_notice: adw::PreferencesGroup,
     groups: RefCell<Vec<adw::PreferencesGroup>>,
     rows: RefCell<Vec<NativeSettingRow>>,
     on_intent: Rc<dyn Fn(SettingsIntent)>,
@@ -25,6 +26,9 @@ pub(crate) struct SettingsView {
 impl SettingsView {
     pub(crate) fn new(on_intent: Rc<dyn Fn(SettingsIntent)>) -> Self {
         let page = adw::PreferencesPage::new();
+        let managed_notice = adw::PreferencesGroup::new();
+        managed_notice.set_visible(false);
+        page.add(&managed_notice);
         let status = adw::StatusPage::builder()
             .icon_name("preferences-system-symbolic")
             .vexpand(true)
@@ -56,6 +60,7 @@ impl SettingsView {
         Self {
             root,
             page,
+            managed_notice,
             groups: RefCell::new(Vec::new()),
             rows: RefCell::new(Vec::new()),
             on_intent,
@@ -71,6 +76,10 @@ impl SettingsView {
     }
 
     pub(crate) fn render(&self, presentation: &SettingsPresentation) {
+        self.managed_notice
+            .set_description(presentation.managed_notice());
+        self.managed_notice
+            .set_visible(presentation.managed_notice().is_some());
         let action = presentation.retry_action();
         self.retry.set_visible(action.is_some());
         self.retry
@@ -1200,6 +1209,105 @@ pub(crate) fn run_renderer_scenarios(application: &adw::Application) {
     automatic_integration_transition_requires_confirmation(application);
     choice_row_click_opens_the_value_menu(application);
     updater_renderer_scenarios(application);
+    declarative_settings_renderer_scenarios(application);
+}
+
+#[cfg(test)]
+fn declarative_settings_renderer_scenarios(application: &adw::Application) {
+    use lg_buddy::settings::SettingsStore;
+    use lg_buddy::settings_view::{BehaviorSetting, SettingsApplication};
+    for source in ["generic", "nix"] {
+        let directory = std::env::temp_dir().join(format!(
+            "lg-buddy-managed-gui-{}-{source}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let config = directory.join("config.env");
+        std::fs::write(
+            &config,
+            "screen_idle_blank=disabled\nscreen_idle_timeout=600\n",
+        )
+        .unwrap();
+        let binding = lg_buddy::config::declarative::binding_path(&config).unwrap();
+        std::fs::write(
+            &binding,
+            format!(
+                r#"{{"version":1,"source":"{source}","settings":{{"screen.idle_timeout":300}}}}"#
+            ),
+        )
+        .unwrap();
+        let (mut model, opening) = SettingsApplication::open();
+        model
+            .complete_read(
+                opening.read_operation().unwrap(),
+                Ok(
+                    SettingsPresentation::from_store(&SettingsStore::load(&config).unwrap())
+                        .groups()
+                        .to_vec(),
+                ),
+            )
+            .unwrap();
+        let view = SettingsView::new(Rc::new(|_| {}));
+        let window = adw::ApplicationWindow::builder()
+            .application(application)
+            .default_width(360)
+            .default_height(700)
+            .content(view.widget())
+            .build();
+        window.present();
+        for available in [false, true] {
+            model.set_controls_available(available);
+            view.render(model.presentation());
+            assert!(view.managed_notice.is_visible());
+            assert!(
+                view.managed_notice
+                    .measure(gtk::Orientation::Vertical, 360)
+                    .0
+                    > 0
+            );
+            assert!(view.widget().measure(gtk::Orientation::Horizontal, -1).0 <= 360);
+            if source == "nix" {
+                // This notice is an explicit product-copy requirement.
+                assert_eq!(view.managed_notice.description().as_deref(),Some("Some settings are disabled because they are managed declaratively in your nix configuration"));
+            }
+            let rows = view.rows.borrow();
+            let managed = rows
+                .iter()
+                .find(|r| r.presentation.borrow().setting() == BehaviorSetting::ScreenIdleTimeout)
+                .unwrap();
+            assert!(managed.row.is_visible());
+            assert!(!managed.row.is_sensitive());
+            let editable = rows
+                .iter()
+                .find(|r| r.presentation.borrow().setting() == BehaviorSetting::ScreenIdleBlank)
+                .unwrap();
+            assert_eq!(editable.row.is_sensitive(), available);
+        }
+        std::fs::remove_file(binding).unwrap();
+        let refresh = model.handle_intent(SettingsIntent::Refresh).unwrap();
+        model
+            .complete_read(
+                refresh.read_operation().unwrap(),
+                Ok(
+                    SettingsPresentation::from_store(&SettingsStore::load(&config).unwrap())
+                        .groups()
+                        .to_vec(),
+                ),
+            )
+            .unwrap();
+        view.render(model.presentation());
+        assert!(!view.managed_notice.is_visible());
+        assert!(model
+            .presentation()
+            .groups()
+            .iter()
+            .flat_map(|g| g.rows())
+            .find(|r| r.setting() == BehaviorSetting::ScreenIdleTimeout)
+            .unwrap()
+            .editor_enabled());
+        window.close();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 }
 
 #[cfg(test)]
@@ -1415,7 +1523,7 @@ fn updater_renderer_scenarios(application: &adw::Application) {
     use crate::controller_test_support::pump_until;
     use lg_buddy::presentation::update_check::UpdateCheckReport;
     use lg_buddy::settings::ConfigEnvReader;
-    use lg_buddy::settings_view::{BehaviorSetting, SettingsApplication};
+    use lg_buddy::settings_view::{BehaviorSetting, SettingsApplication, SettingsReadSnapshot};
     use lg_buddy::update_flow::{UpdateInstallOutcome, UpdateInstallTask};
     use lg_buddy::update_install::{PreparedUpdateInstall, UpdateInstallError, UpdateInstallStage};
     use lg_buddy::updates::UpdateChannel;
@@ -1554,10 +1662,10 @@ fn updater_renderer_scenarios(application: &adw::Application) {
         )
         .unwrap();
     view.render(model.presentation());
-    assert_eq!(row.title(), "Update available");
+    assert_eq!(row.title(), "Managed externally");
     assert!(row.subtitle().unwrap().contains("pacman"));
-    assert_eq!(action.label().as_deref(), Some("Check for updates"));
-    assert!(action.is_sensitive());
+    assert_eq!(action.label().as_deref(), Some("Managed externally"));
+    assert!(!action.is_sensitive());
     assert!(!view.updater.presented.get());
     assert!(model
         .handle_intent(SettingsIntent::PrepareUpdateInstall)
@@ -1567,6 +1675,18 @@ fn updater_renderer_scenarios(application: &adw::Application) {
         lg_buddy::upgrade_preflight::PackageFamily::Dpkg,
         lg_buddy::upgrade_preflight::PackageFamily::Rpm,
     ] {
+        let refresh = model.handle_intent(SettingsIntent::Refresh).unwrap();
+        model
+            .complete_snapshot(
+                refresh.read_operation().unwrap(),
+                Ok(SettingsReadSnapshot {
+                    groups: SettingsPresentation::from_store(&store).groups().to_vec(),
+                    installation_ownership: Some(
+                        lg_buddy::upgrade_preflight::InstallationOwnership::Package { family },
+                    ),
+                }),
+            )
+            .unwrap();
         let checking = model
             .handle_intent(SettingsIntent::CheckForUpdates)
             .unwrap();
@@ -1577,9 +1697,7 @@ fn updater_renderer_scenarios(application: &adw::Application) {
                 checking.update_check_operation().unwrap(),
                 Ok(UpdateCheckReport {
                     installation_ownership:
-                        lg_buddy::upgrade_preflight::InstallationOwnership::Package {
-                            family,
-                        },
+                        lg_buddy::upgrade_preflight::InstallationOwnership::Package { family },
                     installed_version: "1.6.0".into(),
                     channel: UpdateChannel::Stable,
                     update_available: true,
@@ -1787,6 +1905,33 @@ fn updater_renderer_scenarios(application: &adw::Application) {
         intents.borrow().is_empty(),
         "rendering must not submit intents"
     );
+    let (mut external, opening) = SettingsApplication::open();
+    external
+        .complete_snapshot(
+            opening.read_operation().unwrap(),
+            Ok(SettingsReadSnapshot {
+                groups: SettingsPresentation::from_store(&store).groups().to_vec(),
+                installation_ownership: Some(
+                    lg_buddy::upgrade_preflight::InstallationOwnership::NixStore,
+                ),
+            }),
+        )
+        .unwrap();
+    view.render(external.presentation());
+    assert_eq!(row.title(), "Managed externally");
+    assert!(row.subtitle().unwrap().contains("managed by Nix"));
+    assert!(row.subtitle().unwrap().contains("rebuild and activate"));
+    assert_eq!(action.label().as_deref(), Some("Managed externally"));
+    assert!(!action.is_sensitive());
+    for native in view.rows.borrow().iter() {
+        match native.presentation.borrow().setting() {
+            BehaviorSetting::UpdatesAutoCheck | BehaviorSetting::UpdatesChannel => {
+                assert!(!native.row.is_visible());
+            }
+            BehaviorSetting::ScreenIdleBlank => assert!(native.row.is_visible()),
+            _ => {}
+        }
+    }
     window.set_default_size(360, 700);
     pump_until(|| window.width() <= 360);
     assert!(view.widget().measure(gtk::Orientation::Horizontal, -1).0 <= 360);
