@@ -159,18 +159,18 @@ in
       };
     };
 
-    networking.networkmanager.dispatcherScripts = [
-      {
-        type = "pre-down";
-        source = pkgs.writeShellScript "lg-buddy-networkmanager-pre-down" ''
-          set -eu
-          [ "''${2:-}" = pre-down ] || exit 0
-          [ -r ${selected} ] || exit 0
-          export LG_BUDDY_CONFIG=${selected}
-          export PATH=${lib.makeBinPath machinePath}
-          exec ${runtime} nm-pre-down
-        '';
-      }
-    ];
+    # Setup checks the hook at this fixed name; dispatcherScripts would name
+    # it 03userscript*. Mode 0544 copies it, as dispatcherScripts does.
+    environment.etc."NetworkManager/dispatcher.d/pre-down.d/LG_Buddy_lifecycle" = {
+      mode = "0544";
+      source = pkgs.writeShellScript "lg-buddy-networkmanager-pre-down" ''
+        set -eu
+        [ "''${2:-}" = pre-down ] || exit 0
+        [ -r ${selected} ] || exit 0
+        export LG_BUDDY_CONFIG=${selected}
+        export PATH=${lib.makeBinPath machinePath}
+        exec ${runtime} nm-pre-down
+      '';
+    };
   };
 }

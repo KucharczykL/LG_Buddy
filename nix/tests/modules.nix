@@ -136,7 +136,7 @@ pkgs.testers.runNixOSTest {
     user = "runuser -u alice -- env XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus "
     ctl = user + "systemctl --user "
     cli = user + "${package}/bin/lg-buddy "
-    hook = "/etc/NetworkManager/dispatcher.d/pre-down.d/03userscript0001"
+    hook = "/etc/NetworkManager/dispatcher.d/pre-down.d/LG_Buddy_lifecycle"
     base = machine.succeed("readlink -f /run/current-system").strip()
 
     def cached_launchers():
