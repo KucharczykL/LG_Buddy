@@ -162,6 +162,9 @@ It is useful when we want to express scenarios like:
   the inactivity timeout
 - when aggressive restore policy is enabled, wake/activity can restore even without a marker
 - when GNOME is available, backend detection resolves to `gnome`
+- when Plasma integration needs setup or repair, native discovery and privileged
+  installation work together on both compatibility-symlink and real-lib64
+  layouts, with repeat setup and cleanup preserving the same behavior
 - when fresh configuration accepts the default `lg_webos` platform, pairing
   stores the credential before setup completes
 - when an existing profile has no platform value, a read-only TV command is

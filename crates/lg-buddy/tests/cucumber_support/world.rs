@@ -11,6 +11,7 @@ use std::process::Command as ProcessCommand;
 
 #[derive(World, Default)]
 pub struct LgBuddyWorld {
+    pub(super) plasma: Option<super::plasma::PlasmaSetup>,
     env: Option<TestEnv>,
     config: Option<TestConfigFile>,
     runtime: Option<RuntimeStateLayout>,
